@@ -1,0 +1,28 @@
+name: chesslock
+description: ChessLock
+publish_to: "none"
+version: 1.0.0+2
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  url_launcher: ^6.3.2
+  cupertino_icons: ^1.0.6
+  http: ^1.2.2
+  shared_preferences: ^2.2.3
+  chess: ^0.8.1
+  advanced_chess_board:
+    path: packages/advanced_chess_board
+  google_mobile_ads: ^8.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.2
+
+flutter:
+  uses-material-design: true
