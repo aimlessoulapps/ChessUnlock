@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:url_launcher/url_launcher.dart';
@@ -536,29 +535,6 @@ class _ChessLockShellState extends State<ChessLockShell>
     await _saveLockedPackages();
   }
 
-  static const int _maxIconPngBytes = 512 * 1024;
-
-  Uint8List? _decodeIconPngBase64(String b64) {
-    final normalized = b64.trim();
-    if (normalized.isEmpty) return null;
-
-    final padding = normalized.endsWith("==")
-        ? 2
-        : normalized.endsWith("=")
-            ? 1
-            : 0;
-    final estimatedBytes = max(0, ((normalized.length * 3) ~/ 4) - padding);
-    if (estimatedBytes > _maxIconPngBytes) return null;
-
-    try {
-      final bytes = base64Decode(normalized);
-      if (bytes.length > _maxIconPngBytes) return null;
-      return bytes;
-    } catch (_) {
-      return null;
-    }
-  }
-
   Future<void> _prefetchIcons() async {
     try {
       final list = await _getLaunchableAppsRaw();
@@ -568,7 +544,7 @@ class _ChessLockShellState extends State<ChessLockShell>
         final pkg = (m["packageName"] ?? "").toString();
         final b64 = (m["iconPngBase64"] ?? "").toString();
         if (pkg.isEmpty || b64.isEmpty) continue;
-        final bytes = _decodeIconPngBase64(b64);
+        final bytes = decodeIconPngBase64(b64);
         if (bytes != null) map[pkg] = bytes;
       }
 
@@ -1244,7 +1220,7 @@ class _ChessLockShellState extends State<ChessLockShell>
       (defaultTargetPlatform == TargetPlatform.android ||
           defaultTargetPlatform == TargetPlatform.iOS);
 
-  bool get _hintAvailable =>
+  bool get _rewardedPuzzleActionAvailable =>
       _puzzle != null &&
       !_solved &&
       !_loadingPuzzle &&
@@ -1252,13 +1228,9 @@ class _ChessLockShellState extends State<ChessLockShell>
       !_rewardedActionInProgress &&
       !_rewardedAdShowing;
 
-  bool get _skipAvailable =>
-      _puzzle != null &&
-      !_solved &&
-      !_loadingPuzzle &&
-      !_isChecking &&
-      !_rewardedActionInProgress &&
-      !_rewardedAdShowing;
+  bool get _hintAvailable => _rewardedPuzzleActionAvailable;
+
+  bool get _skipAvailable => _rewardedPuzzleActionAvailable;
 
   Future<void> _onHintPressed() async {
     if (!_hintAvailable) return;
@@ -1354,7 +1326,7 @@ class _ChessLockShellState extends State<ChessLockShell>
         ) ??
         false;
 
-    if (!confirmed || !mounted) return; 
+    if (!confirmed || !mounted) return;
 
     setState(() => _rewardedActionInProgress = true);
     final result = await _showRewardedAd(onRewardEarned: onRewardEarned);
@@ -1572,6 +1544,24 @@ class _ChessLockShellState extends State<ChessLockShell>
     await _showBreakTimePicker();
   }
 
+  Widget _bottomSheetBody(BuildContext ctx, Widget child) {
+    final padding = MediaQuery.of(ctx).padding;
+    final insets = MediaQuery.of(ctx).viewInsets;
+
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: 16,
+          right: 16,
+          top: 8,
+          bottom: max(16, padding.bottom) + insets.bottom,
+        ),
+        child: SingleChildScrollView(child: child),
+      ),
+    );
+  }
+
   Future<void> _showBreakTimePicker() async {
     if (!_canUnlockApps) {
       _snack("Solve the puzzle first.");
@@ -1594,96 +1584,84 @@ class _ChessLockShellState extends State<ChessLockShell>
       backgroundColor: Theme.of(context).colorScheme.surface,
       builder: (ctx) {
         final cs = Theme.of(ctx).colorScheme;
-        final padding = MediaQuery.of(ctx).padding;
-        final insets = MediaQuery.of(ctx).viewInsets;
 
-        return SafeArea(
-          top: false,
-          child: Padding(
-            padding: EdgeInsets.only(
-              left: 16,
-              right: 16,
-              top: 8,
-              bottom: max(16, padding.bottom) + insets.bottom,
-            ),
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
+        return _bottomSheetBody(
+          ctx,
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              OverflowBar(
+                alignment: MainAxisAlignment.spaceBetween,
+                overflowAlignment: OverflowBarAlignment.end,
+                spacing: 8,
+                overflowSpacing: 8,
                 children: [
-                  OverflowBar(
-                    alignment: MainAxisAlignment.spaceBetween,
-                    overflowAlignment: OverflowBarAlignment.end,
-                    spacing: 8,
-                    overflowSpacing: 8,
-                    children: [
-                      Text(
-                        "Choose unlock time",
-                        style: Theme.of(ctx).textTheme.titleMedium,
-                      ),
-                      TextButton(
-                        onPressed: () => Navigator.pop(ctx),
-                        child: const Text("Cancel"),
-                      ),
-                      FilledButton(
-                        onPressed: () async {
-                          Navigator.pop(ctx);
-                          final saved = await _unlockForMinutes(selected);
-                          if (!mounted) return;
-                          if (saved) {
-                            _snack("Apps unlocked for $selected minutes.");
-                          }
-                        },
-                        child: const Text("Start"),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  Container(
-                    decoration: BoxDecoration(
-                      color: cs.surfaceContainerHighest.withOpacity(0.55),
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(
-                          color: cs.outlineVariant.withOpacity(0.45)),
-                    ),
-                    height: 180,
-                    child: CupertinoTheme(
-                      data: CupertinoThemeData(
-                        brightness: Theme.of(ctx).brightness,
-                        textTheme: CupertinoTextThemeData(
-                          pickerTextStyle: TextStyle(
-                            color: cs.onSurface,
-                            fontSize: 20,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                      child: CupertinoPicker(
-                        itemExtent: 42,
-                        magnification: 1.08,
-                        squeeze: 1.15,
-                        useMagnifier: true,
-                        scrollController: FixedExtentScrollController(
-                          initialItem: (selected - 1).clamp(0, 14),
-                        ),
-                        onSelectedItemChanged: (i) => selected = i + 1,
-                        children: List.generate(
-                          15,
-                          (i) => Center(child: Text("${i + 1} min")),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
                   Text(
-                    "How long should your locked apps stay open?",
-                    style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
-                          color: cs.onSurfaceVariant,
-                        ),
-                    textAlign: TextAlign.center,
+                    "Choose unlock time",
+                    style: Theme.of(ctx).textTheme.titleMedium,
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text("Cancel"),
+                  ),
+                  FilledButton(
+                    onPressed: () async {
+                      Navigator.pop(ctx);
+                      final saved = await _unlockForMinutes(selected);
+                      if (!mounted) return;
+                      if (saved) {
+                        _snack("Apps unlocked for $selected minutes.");
+                      }
+                    },
+                    child: const Text("Start"),
                   ),
                 ],
               ),
-            ),
+              const SizedBox(height: 10),
+              Container(
+                decoration: BoxDecoration(
+                  color: cs.surfaceContainerHighest.withOpacity(0.55),
+                  borderRadius: BorderRadius.circular(18),
+                  border:
+                      Border.all(color: cs.outlineVariant.withOpacity(0.45)),
+                ),
+                height: 180,
+                child: CupertinoTheme(
+                  data: CupertinoThemeData(
+                    brightness: Theme.of(ctx).brightness,
+                    textTheme: CupertinoTextThemeData(
+                      pickerTextStyle: TextStyle(
+                        color: cs.onSurface,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  child: CupertinoPicker(
+                    itemExtent: 42,
+                    magnification: 1.08,
+                    squeeze: 1.15,
+                    useMagnifier: true,
+                    scrollController: FixedExtentScrollController(
+                      initialItem: (selected - 1).clamp(0, 14),
+                    ),
+                    onSelectedItemChanged: (i) => selected = i + 1,
+                    children: List.generate(
+                      15,
+                      (i) => Center(child: Text("${i + 1} min")),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                "How long should your locked apps stay open?",
+                style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                      color: cs.onSurfaceVariant,
+                    ),
+                textAlign: TextAlign.center,
+              ),
+            ],
           ),
         );
       },
@@ -1739,89 +1717,77 @@ class _ChessLockShellState extends State<ChessLockShell>
       isScrollControlled: true,
       builder: (ctx) {
         final cs = Theme.of(ctx).colorScheme;
-        final padding = MediaQuery.of(ctx).padding;
-        final insets = MediaQuery.of(ctx).viewInsets;
 
-        return SafeArea(
-          top: false,
-          child: Padding(
-            padding: EdgeInsets.only(
-              left: 16,
-              right: 16,
-              top: 8,
-              bottom: max(16, padding.bottom) + insets.bottom,
-            ),
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
+        return _bottomSheetBody(
+          ctx,
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
                 children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          "Turn lock off",
-                          style: Theme.of(ctx).textTheme.titleMedium,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      Icon(Icons.warning_amber_rounded, color: cs.error),
-                    ],
+                  Expanded(
+                    child: Text(
+                      "Turn lock off",
+                      style: Theme.of(ctx).textTheme.titleMedium,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
-                  const SizedBox(height: 8),
-                  Text(
-                    "You’ll have to manually turn it back on in Settings.",
-                    style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
-                          color: cs.onSurfaceVariant,
-                        ),
-                  ),
-                  const SizedBox(height: 12),
-                  ActionTile(
-                    title: "Turn off for 24 hours",
-                    subtitle: "Auto re-locks after 24h",
-                    icon: Icons.schedule_rounded,
-                    onTap: () async {
-                      Navigator.pop(ctx);
-                      final saved = await _unlockFor24h();
-                      if (!mounted) return;
-                      if (saved) _snack("Unlocked for 24 hours.");
-                    },
-                  ),
-                  const SizedBox(height: 8),
-                  ActionTile(
-                    title: "Turn off until I turn it back on",
-                    subtitle: "No auto re-lock",
-                    icon: Icons.power_settings_new_rounded,
-                    onTap: () async {
-                      Navigator.pop(ctx);
-                      final ok = await showDialog<bool>(
-                            context: context,
-                            builder: (d) => AlertDialog(
-                              title: const Text("Turn off indefinitely?"),
-                              content: const Text(
-                                "Apps won’t be locked until you manually turn Lock ON again.",
-                              ),
-                              actions: [
-                                TextButton(
-                                  onPressed: () => Navigator.pop(d, false),
-                                  child: const Text("Cancel"),
-                                ),
-                                FilledButton(
-                                  onPressed: () => Navigator.pop(d, true),
-                                  child: const Text("Turn off"),
-                                ),
-                              ],
-                            ),
-                          ) ??
-                          false;
-                      if (!mounted || !ok) return;
-                      final saved = await _unlockForMinutes(null);
-                      if (!mounted) return;
-                      if (saved) _snack("Lock turned off.");
-                    },
-                  ),
+                  Icon(Icons.warning_amber_rounded, color: cs.error),
                 ],
               ),
-            ),
+              const SizedBox(height: 8),
+              Text(
+                "You’ll have to manually turn it back on in Settings.",
+                style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                      color: cs.onSurfaceVariant,
+                    ),
+              ),
+              const SizedBox(height: 12),
+              ActionTile(
+                title: "Turn off for 24 hours",
+                subtitle: "Auto re-locks after 24h",
+                icon: Icons.schedule_rounded,
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final saved = await _unlockFor24h();
+                  if (!mounted) return;
+                  if (saved) _snack("Unlocked for 24 hours.");
+                },
+              ),
+              const SizedBox(height: 8),
+              ActionTile(
+                title: "Turn off until I turn it back on",
+                subtitle: "No auto re-lock",
+                icon: Icons.power_settings_new_rounded,
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final ok = await showDialog<bool>(
+                        context: context,
+                        builder: (d) => AlertDialog(
+                          title: const Text("Turn off indefinitely?"),
+                          content: const Text(
+                            "Apps won’t be locked until you manually turn Lock ON again.",
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(d, false),
+                              child: const Text("Cancel"),
+                            ),
+                            FilledButton(
+                              onPressed: () => Navigator.pop(d, true),
+                              child: const Text("Turn off"),
+                            ),
+                          ],
+                        ),
+                      ) ??
+                      false;
+                  if (!mounted || !ok) return;
+                  final saved = await _unlockForMinutes(null);
+                  if (!mounted) return;
+                  if (saved) _snack("Lock turned off.");
+                },
+              ),
+            ],
           ),
         );
       },
@@ -1834,51 +1800,38 @@ class _ChessLockShellState extends State<ChessLockShell>
       showDragHandle: true,
       isScrollControlled: true,
       builder: (ctx) {
-        final padding = MediaQuery.of(ctx).padding;
-        final insets = MediaQuery.of(ctx).viewInsets;
-
-        return SafeArea(
-          top: false,
-          child: Padding(
-            padding: EdgeInsets.only(
-              left: 16,
-              right: 16,
-              top: 8,
-              bottom: max(16, padding.bottom) + insets.bottom,
-            ),
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
+        return _bottomSheetBody(
+          ctx,
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              OverflowBar(
+                alignment: MainAxisAlignment.spaceBetween,
+                overflowAlignment: OverflowBarAlignment.end,
+                spacing: 8,
+                overflowSpacing: 8,
                 children: [
-                  OverflowBar(
-                    alignment: MainAxisAlignment.spaceBetween,
-                    overflowAlignment: OverflowBarAlignment.end,
-                    spacing: 8,
-                    overflowSpacing: 8,
-                    children: [
-                      Text(
-                        "Puzzle difficulty",
-                        style: Theme.of(ctx).textTheme.titleMedium,
-                      ),
-                      TextButton(
-                        onPressed: () => Navigator.pop(ctx),
-                        child: const Text("Close"),
-                      ),
-                    ],
+                  Text(
+                    "Puzzle difficulty",
+                    style: Theme.of(ctx).textTheme.titleMedium,
                   ),
-                  const SizedBox(height: 8),
-                  ..._difficultyOptions.map((d) {
-                    final isSel = d == _difficulty;
-                    return ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: Text(getDifficultyDisplayName(d)),
-                      trailing: isSel ? const Icon(Icons.check_rounded) : null,
-                      onTap: () => Navigator.pop(ctx, d),
-                    );
-                  }),
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text("Close"),
+                  ),
                 ],
               ),
-            ),
+              const SizedBox(height: 8),
+              ..._difficultyOptions.map((d) {
+                final isSel = d == _difficulty;
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(getDifficultyDisplayName(d)),
+                  trailing: isSel ? const Icon(Icons.check_rounded) : null,
+                  onTap: () => Navigator.pop(ctx, d),
+                );
+              }),
+            ],
           ),
         );
       },

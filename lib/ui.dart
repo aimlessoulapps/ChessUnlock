@@ -7,7 +7,6 @@ import 'package:advanced_chess_board/advanced_chess_board.dart';
 import 'package:advanced_chess_board/chess_board_controller.dart';
 import 'package:advanced_chess_board/models/enums.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart' hide Uint8List;
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 
@@ -46,7 +45,7 @@ String getDifficultyDisplayName(String difficulty) {
 
 const int _maxIconPngBytes = 512 * 1024;
 
-Uint8List? _decodeIconPngBase64(String b64) {
+Uint8List? decodeIconPngBase64(String b64) {
   final normalized = b64.trim();
   if (normalized.isEmpty) return null;
 
@@ -1438,7 +1437,7 @@ class _AppSelectionPageState extends State<AppSelectionPage> {
             final pkg = (m["packageName"] ?? "").toString();
             final name = (m["appName"] ?? "").toString();
             final b64 = (m["iconPngBase64"] ?? "").toString();
-            final bytes = _decodeIconPngBase64(b64);
+            final bytes = decodeIconPngBase64(b64);
             return LaunchableApp(
               packageName: pkg,
               appName: name,
