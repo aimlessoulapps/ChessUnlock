@@ -76,7 +76,7 @@ void main() {
     expect(find.byType(MaterialApp), findsOneWidget);
     expect(find.text('Lock Mode'), findsOneWidget);
     expect(find.text('Locked apps'), findsOneWidget);
-    expect(find.text('Solve puzzle to take a break'), findsOneWidget);
+    expect(find.text('Solve puzzle to unlock apps'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();

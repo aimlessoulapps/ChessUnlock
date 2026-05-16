@@ -28,6 +28,8 @@ class ForegroundAppWatcherService : Service() {
         private const val ACTION_HIDE_OVERLAY = "chesslock.action.HIDE_OVERLAY"
         private const val USAGE_EVENT_LOOKBACK_MS = 10_000L
         private const val USAGE_EVENT_OVERLAP_MS = 1000L
+        private const val OVERLAY_CONFIRM_DELAY_MS = 250L
+        private const val SELF_OPEN_SUPPRESS_MS = 1800L
 
         fun start(ctx: Context) {
             val i = Intent(ctx, ForegroundAppWatcherService::class.java)
@@ -65,6 +67,9 @@ class ForegroundAppWatcherService : Service() {
 
     private var lastPkg: String? = null
     private var lastUsageEventQueryMs: Long = 0L
+    private var pendingBlockedPkg: String? = null
+    private var pendingBlockedSinceMs: Long = 0L
+    private var suppressOverlayUntilMs: Long = 0L
 
     private val tick = object : Runnable {
         override fun run() {
@@ -81,19 +86,58 @@ class ForegroundAppWatcherService : Service() {
                 val enforceNow = shouldEnforceNow()
 
                 val current = getForegroundPackage()
+                val now = System.currentTimeMillis()
 
-                val shouldBlock =
-                    enforceNow &&
-                            current != null &&
-                            current != packageName &&
-                            locked.contains(current)
+                if (current == packageName) {
+                    clearPendingBlockedPackage()
+                    hideOverlay()
+                    scheduleNext(650)
+                    return
+                }
 
-                if (shouldBlock) {
-                    showOverlay(current!!)
+                val shouldBlock = enforceNow &&
+                        current != null &&
+                        locked.contains(current)
+
+                if (!shouldBlock || now < suppressOverlayUntilMs) {
+                    clearPendingBlockedPackage()
+                    hideOverlay()
+                    scheduleNext(if (now < suppressOverlayUntilMs) 300 else nextIntervalWhileUnlocked())
+                    return
+                }
+
+                val blockedPkg = current!!
+                if (overlayShown) {
+                    showOverlay(blockedPkg)
+                    scheduleNext(450)
+                    return
+                }
+
+                if (pendingBlockedPkg != blockedPkg) {
+                    pendingBlockedPkg = blockedPkg
+                    pendingBlockedSinceMs = now
+                    hideOverlay()
+                    scheduleNext(OVERLAY_CONFIRM_DELAY_MS)
+                    return
+                }
+
+                val elapsed = now - pendingBlockedSinceMs
+                if (elapsed < OVERLAY_CONFIRM_DELAY_MS) {
+                    scheduleNext((OVERLAY_CONFIRM_DELAY_MS - elapsed).coerceAtLeast(100L))
+                    return
+                }
+
+                val confirmed = getForegroundPackage()
+                if (confirmed == blockedPkg &&
+                    confirmed != packageName &&
+                    locked.contains(confirmed)
+                ) {
+                    showOverlay(confirmed)
                     scheduleNext(450)
                 } else {
+                    clearPendingBlockedPackage()
                     hideOverlay()
-                    scheduleNext(nextIntervalWhileUnlocked())
+                    scheduleNext(350)
                 }
             } catch (_: Throwable) {
                 scheduleNext(1200)
@@ -112,6 +156,9 @@ class ForegroundAppWatcherService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_HIDE_OVERLAY) {
+            clearPendingBlockedPackage()
+            suppressOverlayUntilMs = System.currentTimeMillis() + SELF_OPEN_SUPPRESS_MS
+            lastPkg = packageName
             hideOverlay()
         }
         return START_STICKY
@@ -129,6 +176,11 @@ class ForegroundAppWatcherService : Service() {
     private fun scheduleNext(ms: Long) {
         handler.removeCallbacks(tick)
         handler.postDelayed(tick, ms)
+    }
+
+    private fun clearPendingBlockedPackage() {
+        pendingBlockedPkg = null
+        pendingBlockedSinceMs = 0L
     }
 
     private fun nextIntervalWhileUnlocked(): Long {
@@ -193,20 +245,16 @@ class ForegroundAppWatcherService : Service() {
             if (sawTransitionEvent) return null
         } catch (_: Throwable) {}
 
-        return try {
-            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, begin, end)
-            if (stats.isNullOrEmpty()) return null
-            val fallback = stats.maxByOrNull { it.lastTimeUsed }?.packageName
-            if (fallback != null) {
-                lastPkg = fallback
-            }
-            fallback
-        } catch (_: Throwable) {
-            null
-        }
+        return lastPkg
     }
 
     private fun showOverlay(blockedPkg: String) {
+        if (blockedPkg == packageName) {
+            clearPendingBlockedPackage()
+            hideOverlay()
+            return
+        }
+
         if (overlayShown) {
             updateOverlayText(blockedPkg)
             return
@@ -241,9 +289,14 @@ class ForegroundAppWatcherService : Service() {
         val btn = Button(this)
         btn.text = "Open ChessUnlock"
         btn.setOnClickListener {
+            clearPendingBlockedPackage()
+            suppressOverlayUntilMs = System.currentTimeMillis() + SELF_OPEN_SUPPRESS_MS
+            lastPkg = packageName
+            hideOverlay()
             val i = Intent(this, MainActivity::class.java)
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             startActivity(i)
+            handler.postDelayed(tick, 300)
         }
 
         card.addView(title)

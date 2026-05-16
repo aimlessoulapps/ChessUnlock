@@ -28,6 +28,13 @@ object PrefBridge {
         return storageCtx.getSharedPreferences(WATCHER_PREFS, Context.MODE_PRIVATE)
     }
 
+    private fun sanitizeLockedPackages(ctx: Context, packages: Iterable<String>): LinkedHashSet<String> {
+        val ownPackage = ctx.packageName
+        return packages
+            .map { it.trim() }
+            .filterTo(LinkedHashSet()) { it.isNotBlank() && it != ownPackage }
+    }
+
     fun saveWatcherState(
         ctx: Context,
         lockedPackages: Set<String>,
@@ -35,9 +42,10 @@ object PrefBridge {
         indefUnlock: Boolean,
         unlockUntilMs: Long
     ) {
+        val sanitizedLockedPackages = sanitizeLockedPackages(ctx, lockedPackages)
         watcherPrefs(ctx).edit()
             .putBoolean(K_INITIALIZED, true)
-            .putStringSet(K_LOCKED_PACKAGES, lockedPackages)
+            .putStringSet(K_LOCKED_PACKAGES, sanitizedLockedPackages)
             .putBoolean(K_LOCK_ENABLED, lockEnabled)
             .putBoolean(K_INDEF_UNLOCK, indefUnlock)
             .putLong(K_UNLOCK_UNTIL_MS, unlockUntilMs)
@@ -52,7 +60,13 @@ object PrefBridge {
         if (hasWatcherState(ctx)) {
             val raw = watcherPrefs(ctx).getStringSet(K_LOCKED_PACKAGES, emptySet())
                 ?: emptySet()
-            return raw.filterTo(LinkedHashSet()) { it.isNotBlank() }
+            val sanitized = sanitizeLockedPackages(ctx, raw)
+            if (sanitized != raw) {
+                watcherPrefs(ctx).edit()
+                    .putStringSet(K_LOCKED_PACKAGES, sanitized)
+                    .apply()
+            }
+            return sanitized
         }
 
         val sp = prefs(ctx)
@@ -75,7 +89,7 @@ object PrefBridge {
                 val v = arr.optString(i, "")
                 if (v.isNotBlank()) out.add(v)
             }
-            out
+            sanitizeLockedPackages(ctx, out)
         } catch (_: Throwable) {
             emptySet()
         }

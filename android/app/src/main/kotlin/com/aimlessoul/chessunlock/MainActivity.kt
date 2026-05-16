@@ -48,6 +48,10 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
 
+                "getOwnPackageName" -> {
+                    result.success(packageName)
+                }
+
                 "syncWatcherState" -> {
                     syncWatcherState(call.arguments)
                     result.success(null)
@@ -98,6 +102,7 @@ class MainActivity : FlutterActivity() {
         val args = arguments as? Map<*, *> ?: return
         val packages = (args["lockedPackages"] as? List<*>)
             ?.mapNotNull { it?.toString()?.takeIf { pkg -> pkg.isNotBlank() } }
+            ?.filter { pkg -> pkg != packageName }
             ?.toCollection(LinkedHashSet())
             ?: LinkedHashSet()
         val lockEnabled = args["lockEnabled"] as? Boolean ?: true
@@ -174,6 +179,7 @@ class MainActivity : FlutterActivity() {
 
         for (ri in resolved) {
             val pkg = ri.activityInfo.packageName ?: continue
+            if (pkg == packageName) continue
             if (!seen.add(pkg)) continue
 
             val label = try {

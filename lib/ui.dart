@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
@@ -31,6 +32,17 @@ enum AppThemeMode { system, dark, light }
 
 String titleCase(String s) =>
     s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
+
+String getDifficultyDisplayName(String difficulty) {
+  return switch (difficulty.toLowerCase()) {
+    "easiest" => "Easiest (900)",
+    "easier" => "Easier (1200)",
+    "normal" => "Normal (1500)",
+    "harder" => "Harder (1800)",
+    "hardest" => "Hardest (2100)",
+    _ => titleCase(difficulty),
+  };
+}
 
 const int _maxIconPngBytes = 512 * 1024;
 
@@ -90,11 +102,11 @@ class PremiumNavBar extends StatelessWidget {
     return SafeArea(
       top: false,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+        padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
         child: Container(
           decoration: BoxDecoration(
             color: cs.surfaceContainerHighest.withOpacity(0.72),
-            borderRadius: BorderRadius.circular(26),
+            borderRadius: BorderRadius.circular(22),
             border: Border.all(color: cs.outlineVariant.withOpacity(0.45)),
             boxShadow: [
               BoxShadow(
@@ -109,6 +121,7 @@ class PremiumNavBar extends StatelessWidget {
             ],
           ),
           child: NavigationBar(
+            height: 58,
             selectedIndex: index,
             onDestinationSelected: onChanged,
             backgroundColor: Colors.transparent,
@@ -143,38 +156,141 @@ class PremiumNavBar extends StatelessWidget {
 // =========================
 class BannerAdSlot extends StatefulWidget {
   final double height;
-  const BannerAdSlot({super.key, this.height = 60});
+  final bool active;
+  const BannerAdSlot({super.key, this.height = 60, this.active = true});
 
   @override
   State<BannerAdSlot> createState() => _BannerAdSlotState();
 }
 
-class _BannerAdSlotState extends State<BannerAdSlot> {
-  static const _testBannerAdUnitId = "ca-app-pub-8108010703558411/9765598008";
+class _BannerAdSlotState extends State<BannerAdSlot>
+    with WidgetsBindingObserver {
+  static const _testBannerAdUnitId = "ca-app-pub-3940256099942544/6300978111";
+  static const _initialRetryDelay = Duration(seconds: 30);
+  static const _maxRetryDelay = Duration(minutes: 5);
+  static const _refreshCooldown = Duration(minutes: 1);
 
   BannerAd? _bannerAd;
+  BannerAd? _loadingBannerAd;
   bool _loaded = false;
+  bool _loading = false;
+  bool _appResumed = true;
+  DateTime? _lastLoadStartedAt;
+  DateTime? _nextRetryAt;
+  Duration _retryDelay = _initialRetryDelay;
+  Timer? _retryTimer;
 
   bool get _adsSupported =>
       !kIsWeb &&
       (defaultTargetPlatform == TargetPlatform.android ||
           defaultTargetPlatform == TargetPlatform.iOS);
 
+  bool get _hasLoadedBanner => _loaded && _bannerAd != null;
+
   @override
   void initState() {
     super.initState();
-    if (_adsSupported) {
-      _loadBannerAd();
+    WidgetsBinding.instance.addObserver(this);
+    if (widget.active) {
+      _ensureBannerAdLoaded();
     }
   }
 
+  @override
+  void didUpdateWidget(covariant BannerAdSlot oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!widget.active) {
+      _cancelRetryTimer();
+      return;
+    }
+    if (!oldWidget.active) {
+      _ensureBannerAdLoaded(refreshLoadedAd: true);
+    } else if (!_hasLoadedBanner) {
+      _ensureBannerAdLoaded();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _appResumed = true;
+      if (widget.active) {
+        _ensureBannerAdLoaded(refreshLoadedAd: true);
+      }
+    } else {
+      _appResumed = false;
+      _cancelRetryTimer();
+    }
+  }
+
+  void _ensureBannerAdLoaded({bool refreshLoadedAd = false}) {
+    if (!_adsSupported || !widget.active || !_appResumed || _loading) {
+      return;
+    }
+
+    if (_hasLoadedBanner) {
+      if (refreshLoadedAd && _canRefreshLoadedBanner) {
+        _disposeLoadedBanner(afterFrame: true);
+        if (mounted) setState(() {});
+      } else {
+        return;
+      }
+    }
+
+    final nextRetryAt = _nextRetryAt;
+    if (nextRetryAt != null) {
+      final remaining = nextRetryAt.difference(DateTime.now());
+      if (remaining > Duration.zero) {
+        _scheduleRetry(remaining);
+        return;
+      }
+    }
+
+    _loadBannerAd();
+  }
+
+  bool get _canRefreshLoadedBanner {
+    final lastLoadStartedAt = _lastLoadStartedAt;
+    if (lastLoadStartedAt == null) return true;
+    return DateTime.now().difference(lastLoadStartedAt) >= _refreshCooldown;
+  }
+
+  void _scheduleRetry(Duration delay) {
+    if (!_adsSupported ||
+        !widget.active ||
+        !_appResumed ||
+        _hasLoadedBanner ||
+        _loading) {
+      return;
+    }
+    _retryTimer?.cancel();
+    _retryTimer = Timer(delay, () {
+      _retryTimer = null;
+      if (!mounted) return;
+      _ensureBannerAdLoaded();
+    });
+  }
+
+  void _cancelRetryTimer() {
+    _retryTimer?.cancel();
+    _retryTimer = null;
+  }
+
   void _loadBannerAd() {
+    if (!_adsSupported || !_appResumed || _loading || _hasLoadedBanner) return;
+
+    _cancelRetryTimer();
+    _loading = true;
+    _lastLoadStartedAt = DateTime.now();
+    _nextRetryAt = null;
+
     final ad = BannerAd(
       adUnitId: _testBannerAdUnitId,
       request: const AdRequest(),
       size: AdSize.banner,
       listener: BannerAdListener(
         onAdLoaded: (ad) {
+          _loadingBannerAd = null;
           if (!mounted) {
             ad.dispose();
             return;
@@ -182,25 +298,56 @@ class _BannerAdSlotState extends State<BannerAdSlot> {
           setState(() {
             _bannerAd = ad as BannerAd;
             _loaded = true;
+            _loading = false;
+            _nextRetryAt = null;
+            _retryDelay = _initialRetryDelay;
           });
         },
         onAdFailedToLoad: (ad, error) {
+          _loadingBannerAd = null;
           ad.dispose();
           if (!mounted) return;
           setState(() {
             _bannerAd = null;
             _loaded = false;
+            _loading = false;
           });
+          final delayBeforeNextAttempt = _retryDelay;
+          _nextRetryAt = DateTime.now().add(delayBeforeNextAttempt);
+          _scheduleRetry(delayBeforeNextAttempt);
+          final nextRetrySeconds = _retryDelay.inSeconds * 2;
+          final cappedRetrySeconds = nextRetrySeconds > _maxRetryDelay.inSeconds
+              ? _maxRetryDelay.inSeconds
+              : nextRetrySeconds;
+          _retryDelay = Duration(
+            seconds: cappedRetrySeconds,
+          );
         },
       ),
     );
 
+    _loadingBannerAd = ad;
     ad.load();
+  }
+
+  void _disposeLoadedBanner({bool afterFrame = false}) {
+    final ad = _bannerAd;
+    _bannerAd = null;
+    _loaded = false;
+    if (ad == null) return;
+    if (afterFrame && mounted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => ad.dispose());
+    } else {
+      ad.dispose();
+    }
   }
 
   @override
   void dispose() {
-    _bannerAd?.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    _cancelRetryTimer();
+    _loadingBannerAd?.dispose();
+    _disposeLoadedBanner();
     super.dispose();
   }
 
@@ -227,6 +374,7 @@ class _BannerAdSlotState extends State<BannerAdSlot> {
 // HOME TAB
 // =========================
 class HomeTab extends StatelessWidget {
+  final bool active;
   final bool lockEnabled;
   final bool indefiniteUnlock;
   final Duration unlockRemaining;
@@ -247,6 +395,7 @@ class HomeTab extends StatelessWidget {
 
   const HomeTab({
     super.key,
+    required this.active,
     required this.lockEnabled,
     required this.indefiniteUnlock,
     required this.unlockRemaining,
@@ -278,34 +427,161 @@ class HomeTab extends StatelessWidget {
     final lockedList = lockedPackages.toList()..sort();
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const SizedBox(height: 6),
+          const SizedBox(height: 2),
           Text(
             "Lock Mode",
             style: Theme.of(context).textTheme.headlineLarge?.copyWith(
                   fontWeight: FontWeight.w700,
                 ),
           ),
-          const SizedBox(height: 12),
-          const BannerAdSlot(height: 60),
-          const SizedBox(height: 12),
-          GlassCard(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+          const SizedBox(height: 8),
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.only(bottom: 8),
               children: [
-                StatusDot(active: isActive),
-                const SizedBox(width: 12),
-                Expanded(
+                BannerAdSlot(height: 54, active: active),
+                const SizedBox(height: 8),
+                GlassCard(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      StatusDot(active: isActive),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Text(
+                                  "Status",
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .labelLarge
+                                      ?.copyWith(
+                                        color: cs.onSurfaceVariant,
+                                      ),
+                                ),
+                                const Spacer(),
+                                Pill(text: statusText, active: isActive),
+                              ],
+                            ),
+                            if (countdownText != null) ...[
+                              const SizedBox(height: 6),
+                              Text(
+                                countdownText,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodyMedium
+                                    ?.copyWith(
+                                      color: cs.onSurface,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                              ),
+                            ],
+                            const SizedBox(height: 6),
+                            InkWell(
+                              onTap: onOpenDifficulty,
+                              borderRadius: BorderRadius.circular(12),
+                              child: Padding(
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 4),
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.tune_rounded,
+                                        size: 18, color: cs.onSurfaceVariant),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      "Difficulty",
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodyMedium
+                                          ?.copyWith(
+                                              color: cs.onSurfaceVariant),
+                                    ),
+                                    const Spacer(),
+                                    Flexible(
+                                      child: Text(
+                                        getDifficultyDisplayName(difficulty),
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodyMedium
+                                            ?.copyWith(
+                                                fontWeight: FontWeight.w700),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Icon(Icons.chevron_right_rounded,
+                                        color: cs.onSurfaceVariant),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                GlassCard(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        "Your stats",
+                        style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                              color: cs.onSurfaceVariant,
+                            ),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: StatChip(
+                              label: "Solved",
+                              value: "$statSolved",
+                              icon: Icons.check_circle_rounded,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: StatChip(
+                              label: "Best",
+                              value:
+                                  statBestRating > 0 ? "$statBestRating" : "—",
+                              icon: Icons.star_rounded,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: StatChip(
+                              label: "Accuracy",
+                              value:
+                                  "${accuracyPct.isNaN ? 0 : accuracyPct.round()}%",
+                              icon: Icons.insights_rounded,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                GlassCard(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Row(
                         children: [
                           Text(
-                            "Status",
+                            "Locked apps",
                             style: Theme.of(context)
                                 .textTheme
                                 .labelLarge
@@ -314,215 +590,116 @@ class HomeTab extends StatelessWidget {
                                 ),
                           ),
                           const Spacer(),
-                          Pill(text: statusText, active: isActive),
+                          Text(
+                            "${lockedPackages.length}",
+                            style: Theme.of(context)
+                                .textTheme
+                                .labelLarge
+                                ?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                ),
+                          ),
+                          const SizedBox(width: 8),
+                          TextButton(
+                            onPressed: onEditLockedApps,
+                            child: const Text("Edit"),
+                          ),
                         ],
                       ),
-                      if (countdownText != null) ...[
-                        const SizedBox(height: 8),
+                      const SizedBox(height: 6),
+                      if (lockedPackages.isEmpty)
                         Text(
-                          countdownText,
+                          "No apps selected yet.",
                           style:
-                              Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                    color: cs.onSurface,
-                                    fontWeight: FontWeight.w600,
+                              Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: cs.onSurfaceVariant,
                                   ),
+                        )
+                      else
+                        LayoutBuilder(
+                          builder: (context, constraints) {
+                            const pill = 38.0;
+                            const gap = 7.0;
+
+                            final maxPills =
+                                ((constraints.maxWidth + gap) / (pill + gap))
+                                    .floor()
+                                    .clamp(1, 50);
+
+                            final total = lockedList.length;
+
+                            List<String> showPkgs;
+                            int overflow;
+
+                            if (total <= maxPills) {
+                              showPkgs = lockedList;
+                              overflow = 0;
+                            } else {
+                              final take = max(0, maxPills - 1);
+                              showPkgs = lockedList.take(take).toList();
+                              overflow = total - take;
+                            }
+
+                            return Row(
+                              children: [
+                                for (int i = 0; i < showPkgs.length; i++)
+                                  Padding(
+                                    padding: EdgeInsets.only(
+                                      right: (i == showPkgs.length - 1 &&
+                                              overflow == 0)
+                                          ? 0
+                                          : gap,
+                                    ),
+                                    child: AppIconPill(
+                                      iconBytes: iconsByPkg[showPkgs[i]],
+                                      fallbackText:
+                                          _initialsFromPackage(showPkgs[i]),
+                                    ),
+                                  ),
+                                if (overflow > 0)
+                                  AppIconPill(
+                                    iconBytes: null,
+                                    fallbackText: "+$overflow",
+                                  ),
+                              ],
+                            );
+                          },
                         ),
-                      ],
-                      const SizedBox(height: 10),
-                      InkWell(
-                        onTap: onOpenDifficulty,
-                        borderRadius: BorderRadius.circular(14),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 6),
-                          child: Row(
-                            children: [
-                              Icon(Icons.tune_rounded,
-                                  size: 18, color: cs.onSurfaceVariant),
-                              const SizedBox(width: 8),
-                              Text(
-                                "Difficulty",
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodyMedium
-                                    ?.copyWith(color: cs.onSurfaceVariant),
-                              ),
-                              const Spacer(),
-                              Text(
-                                titleCase(difficulty),
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodyMedium
-                                    ?.copyWith(fontWeight: FontWeight.w700),
-                              ),
-                              const SizedBox(width: 6),
-                              Icon(Icons.chevron_right_rounded,
-                                  color: cs.onSurfaceVariant),
-                            ],
-                          ),
-                        ),
-                      ),
                     ],
                   ),
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 12),
-          GlassCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  "Your stats",
-                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                        color: cs.onSurfaceVariant,
-                      ),
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: StatChip(
-                        label: "Solved",
-                        value: "$statSolved",
-                        icon: Icons.check_circle_rounded,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: StatChip(
-                        label: "Best",
-                        value: statBestRating > 0 ? "$statBestRating" : "—",
-                        icon: Icons.star_rounded,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: StatChip(
-                        label: "Accuracy",
-                        value:
-                            "${accuracyPct.isNaN ? 0 : accuracyPct.round()}%",
-                        icon: Icons.insights_rounded,
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          GlassCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Text(
-                      "Locked apps",
-                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                            color: cs.onSurfaceVariant,
-                          ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      "${lockedPackages.length}",
-                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                            fontWeight: FontWeight.w800,
-                          ),
-                    ),
-                    const SizedBox(width: 10),
-                    TextButton(
-                      onPressed: onEditLockedApps,
-                      child: const Text("Edit"),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                if (lockedPackages.isEmpty)
-                  Text(
-                    "No apps selected yet.",
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: cs.onSurfaceVariant,
-                        ),
-                  )
-                else
-                  LayoutBuilder(
-                    builder: (context, constraints) {
-                      const pill = 42.0;
-                      const gap = 8.0;
-
-                      final maxPills =
-                          ((constraints.maxWidth + gap) / (pill + gap))
-                              .floor()
-                              .clamp(1, 50);
-
-                      final total = lockedList.length;
-
-                      List<String> showPkgs;
-                      int overflow;
-
-                      if (total <= maxPills) {
-                        showPkgs = lockedList;
-                        overflow = 0;
-                      } else {
-                        final take = max(0, maxPills - 1);
-                        showPkgs = lockedList.take(take).toList();
-                        overflow = total - take;
-                      }
-
-                      return Row(
-                        children: [
-                          for (int i = 0; i < showPkgs.length; i++)
-                            Padding(
-                              padding: EdgeInsets.only(
-                                right:
-                                    (i == showPkgs.length - 1 && overflow == 0)
-                                        ? 0
-                                        : gap,
-                              ),
-                              child: AppIconPill(
-                                iconBytes: iconsByPkg[showPkgs[i]],
-                                fallbackText: _initialsFromPackage(showPkgs[i]),
-                              ),
-                            ),
-                          if (overflow > 0)
-                            AppIconPill(
-                              iconBytes: null,
-                              fallbackText: "+$overflow",
-                            ),
-                        ],
-                      );
-                    },
-                  ),
-              ],
-            ),
-          ),
-          const Spacer(),
+          const SizedBox(height: 6),
           SizedBox(
             width: double.infinity,
             child: FilledButton(
               onPressed: onBreakTime,
               style: FilledButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16),
+                padding: const EdgeInsets.symmetric(vertical: 13),
                 shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(18)),
+                    borderRadius: BorderRadius.circular(16)),
               ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   const Icon(Icons.timer_rounded),
-                  const SizedBox(width: 10),
-                  Text(
-                    solved
-                        ? "Select break time"
-                        : "Solve puzzle to take a break",
-                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      solved
+                          ? "Choose unlock time"
+                          : "Solve puzzle to unlock apps",
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ],
               ),
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 4),
         ],
       ),
     );
@@ -541,11 +718,14 @@ class HomeTab extends StatelessWidget {
 // PUZZLE TAB
 // =========================
 class PuzzleTab extends StatelessWidget {
+  final bool active;
   final ChessPuzzle? puzzle;
   final bool loading;
   final String? loadError;
 
   final String sideToMoveLabel;
+  final bool solved;
+  final bool canUnlockApps;
   final bool canUserMove;
   final bool userPlaysBlack;
   final bool isChecking;
@@ -556,6 +736,7 @@ class PuzzleTab extends StatelessWidget {
 
   final bool skipEnabled;
   final VoidCallback onSkip;
+  final VoidCallback onUnlockApps;
 
   final String? hintFromSquare;
   final bool hintBlinkOn;
@@ -564,10 +745,13 @@ class PuzzleTab extends StatelessWidget {
 
   const PuzzleTab({
     super.key,
+    required this.active,
     required this.puzzle,
     required this.loading,
     required this.loadError,
     required this.sideToMoveLabel,
+    required this.solved,
+    required this.canUnlockApps,
     required this.canUserMove,
     required this.userPlaysBlack,
     required this.isChecking,
@@ -575,6 +759,7 @@ class PuzzleTab extends StatelessWidget {
     required this.onHint,
     required this.skipEnabled,
     required this.onSkip,
+    required this.onUnlockApps,
     required this.hintFromSquare,
     required this.hintBlinkOn,
     required this.boardController,
@@ -585,137 +770,192 @@ class PuzzleTab extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const SizedBox(height: 6),
+          const SizedBox(height: 2),
           Text(
             "Puzzle",
             style: Theme.of(context).textTheme.headlineLarge?.copyWith(
                   fontWeight: FontWeight.w700,
                 ),
           ),
-          const SizedBox(height: 12),
-          const BannerAdSlot(height: 60),
+          const SizedBox(height: 8),
+          BannerAdSlot(height: 54, active: active),
           if (loadError != null)
             Padding(
-              padding: const EdgeInsets.only(top: 10),
+              padding: const EdgeInsets.only(top: 6),
               child: Text(loadError!, style: TextStyle(color: cs.error)),
             ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 6),
           Expanded(
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (puzzle != null)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: Row(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final maxBoardWidth = min(constraints.maxWidth, 460.0);
+                final minBoard = min(maxBoardWidth, 160.0);
+                final statusExtra =
+                    puzzle != null && !canUserMove && !solved ? 22.0 : 0.0;
+                final reservedHeight = 132.0 +
+                    (puzzle != null ? 28.0 : 0.0) +
+                    (loading ? 40.0 : 0.0) +
+                    (canUnlockApps ? 42.0 : 0.0) +
+                    statusExtra;
+                final availableForBoard =
+                    constraints.maxHeight - reservedHeight;
+                final boardSize = min(
+                  maxBoardWidth,
+                  max(minBoard, availableForBoard),
+                ).clamp(minBoard, maxBoardWidth).toDouble();
+
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: ConstrainedBox(
+                    constraints:
+                        BoxConstraints(minHeight: constraints.maxHeight),
+                    child: Center(
+                      child: Column(
                         children: [
-                          Expanded(
-                            child: Text(
-                              puzzle!.type,
+                          if (puzzle != null)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 6),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      puzzle!.type,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleSmall
+                                          ?.copyWith(
+                                            color: cs.onSurfaceVariant,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 9, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(999),
+                                      border: Border.all(
+                                          color: cs.outlineVariant
+                                              .withOpacity(0.5)),
+                                      color: cs.surfaceContainerHighest
+                                          .withOpacity(0.35),
+                                    ),
+                                    child: Text(
+                                      "Rating ${puzzle!.rating}",
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .labelMedium
+                                          ?.copyWith(
+                                              fontWeight: FontWeight.w700),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          if (loading)
+                            const Padding(
+                              padding: EdgeInsets.only(bottom: 6),
+                              child: SizedBox(
+                                width: 22,
+                                height: 22,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 3),
+                              ),
+                            ),
+                          SizedBox.square(
+                            dimension: boardSize,
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(16),
+                              child: BoardWithHintOverlay(
+                                userPlaysBlack: userPlaysBlack,
+                                hintFromSquare: hintFromSquare,
+                                hintBlinkOn: hintBlinkOn,
+                                child: AdvancedChessBoard(
+                                  controller: boardController,
+                                  boardOrientation: userPlaysBlack
+                                      ? PlayerColor.black
+                                      : PlayerColor.white,
+                                  enableMoves: canUserMove,
+                                  highlightLastMove: false,
+                                  lightSquareColor: const Color(0xFFE9E9E9),
+                                  darkSquareColor: const Color(0xFF2D6B55),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            sideToMoveLabel,
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleSmall
+                                ?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                            textAlign: TextAlign.center,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          if (puzzle != null && !canUserMove && !solved) ...[
+                            const SizedBox(height: 3),
+                            Text(
+                              isChecking ? "Checking…" : "Locked",
                               style: Theme.of(context)
                                   .textTheme
-                                  .titleSmall
+                                  .bodySmall
                                   ?.copyWith(
                                     color: cs.onSurfaceVariant,
-                                    fontWeight: FontWeight.w600,
                                   ),
-                              overflow: TextOverflow.ellipsis,
                             ),
+                          ],
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: HintSkipButton(
+                                  title: "Hint",
+                                  enabled: hintEnabled,
+                                  onTap: onHint,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: HintSkipButton(
+                                  title: "Skip",
+                                  enabled: skipEnabled,
+                                  onTap: onSkip,
+                                ),
+                              ),
+                            ],
                           ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 6),
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(999),
-                              border: Border.all(
-                                  color: cs.outlineVariant.withOpacity(0.5)),
-                              color:
-                                  cs.surfaceContainerHighest.withOpacity(0.35),
+                          if (canUnlockApps) ...[
+                            const SizedBox(height: 8),
+                            FilledButton.icon(
+                              onPressed: onUnlockApps,
+                              style: FilledButton.styleFrom(
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                minimumSize: const Size(0, 38),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 8,
+                                ),
+                              ),
+                              icon:
+                                  const Icon(Icons.lock_open_rounded, size: 18),
+                              label: const Text("Unlock apps"),
                             ),
-                            child: Text(
-                              "Rating ${puzzle!.rating}",
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .labelMedium
-                                  ?.copyWith(fontWeight: FontWeight.w700),
-                            ),
-                          ),
+                          ],
                         ],
                       ),
                     ),
-                  if (loading)
-                    const Padding(
-                      padding: EdgeInsets.only(bottom: 10),
-                      child: CircularProgressIndicator(),
-                    ),
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 460),
-                    child: AspectRatio(
-                      aspectRatio: 1,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(18),
-                        child: BoardWithHintOverlay(
-                          userPlaysBlack: userPlaysBlack,
-                          hintFromSquare: hintFromSquare,
-                          hintBlinkOn: hintBlinkOn,
-                          child: AdvancedChessBoard(
-                            controller: boardController,
-                            boardOrientation: userPlaysBlack
-                                ? PlayerColor.black
-                                : PlayerColor.white,
-                            enableMoves: canUserMove,
-                            highlightLastMove: false,
-                            lightSquareColor: const Color(0xFFE9E9E9),
-                            darkSquareColor: const Color(0xFF2D6B55),
-                          ),
-                        ),
-                      ),
-                    ),
                   ),
-                  const SizedBox(height: 10),
-                  Text(
-                    sideToMoveLabel,
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
-                    textAlign: TextAlign.center,
-                  ),
-                  if (puzzle != null && !canUserMove) ...[
-                    const SizedBox(height: 6),
-                    Text(
-                      isChecking ? "Checking…" : "Locked",
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: cs.onSurfaceVariant,
-                          ),
-                    ),
-                  ],
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: HintSkipButton(
-                          title: "Hint",
-                          enabled: hintEnabled,
-                          onTap: onHint,
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: HintSkipButton(
-                          title: "Skip",
-                          enabled: skipEnabled,
-                          onTap: onSkip,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
+                );
+              },
             ),
           ),
         ],
@@ -814,18 +1054,18 @@ class HintSkipButton extends StatelessWidget {
 
     return InkWell(
       onTap: enabled ? onTap : null,
-      borderRadius: BorderRadius.circular(18),
+      borderRadius: BorderRadius.circular(14),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
         decoration: BoxDecoration(
           color: cs.surfaceContainerHighest.withOpacity(0.55),
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(14),
           border: Border.all(color: cs.outlineVariant.withOpacity(0.45)),
         ),
         child: Opacity(
           opacity: opacity,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Text(
                 title,
@@ -834,13 +1074,17 @@ class HintSkipButton extends StatelessWidget {
                     .titleSmall
                     ?.copyWith(fontWeight: FontWeight.w800),
               ),
-              const SizedBox(height: 4),
-              Text(
-                enabled ? "Tap to use" : "Please wait",
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: cs.onSurfaceVariant,
-                      fontWeight: FontWeight.w600,
-                    ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  enabled ? "Tap to use" : "Please wait",
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: cs.onSurfaceVariant,
+                        fontWeight: FontWeight.w600,
+                      ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
             ],
           ),
@@ -854,6 +1098,7 @@ class HintSkipButton extends StatelessWidget {
 // SETTINGS TAB
 // =========================
 class SettingsTab extends StatelessWidget {
+  final bool active;
   final bool lockEnabled;
   final bool indefiniteUnlock;
   final Duration unlockRemaining;
@@ -870,6 +1115,7 @@ class SettingsTab extends StatelessWidget {
 
   const SettingsTab({
     super.key,
+    required this.active,
     required this.lockEnabled,
     required this.indefiniteUnlock,
     required this.unlockRemaining,
@@ -893,11 +1139,11 @@ class SettingsTab extends StatelessWidget {
             : "Off (${formatRemaining(unlockRemaining)} left)");
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const SizedBox(height: 6),
+          const SizedBox(height: 2),
           // ✅ Your change: Settings title first (like other tabs)
           Text(
             "Settings",
@@ -905,19 +1151,20 @@ class SettingsTab extends StatelessWidget {
                   fontWeight: FontWeight.w700,
                 ),
           ),
-          const SizedBox(height: 12),
-          const BannerAdSlot(height: 60),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
+          BannerAdSlot(height: 54, active: active),
+          const SizedBox(height: 8),
 
           Expanded(
             child: ListView(
+              padding: const EdgeInsets.only(bottom: 28),
               children: [
                 Text("Lock controls",
                     style: Theme.of(context)
                         .textTheme
                         .labelLarge
                         ?.copyWith(color: cs.onSurfaceVariant)),
-                const SizedBox(height: 10),
+                const SizedBox(height: 8),
                 GlassCard(
                   child: SettingsRow(
                     icon: Icons.lock_rounded,
@@ -930,13 +1177,13 @@ class SettingsTab extends StatelessWidget {
                     onTap: () => onLockToggle(!lockEnabled),
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
                 Text("Puzzle settings",
                     style: Theme.of(context)
                         .textTheme
                         .labelLarge
                         ?.copyWith(color: cs.onSurfaceVariant)),
-                const SizedBox(height: 10),
+                const SizedBox(height: 8),
                 GlassCard(
                   child: SettingsRow(
                     icon: Icons.extension_rounded,
@@ -946,13 +1193,15 @@ class SettingsTab extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          titleCase(difficulty),
+                          getDifficultyDisplayName(difficulty),
                           style: Theme.of(context)
                               .textTheme
                               .bodyMedium
                               ?.copyWith(fontWeight: FontWeight.w700),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
-                        const SizedBox(width: 6),
+                        const SizedBox(width: 4),
                         Icon(Icons.chevron_right_rounded,
                             color: cs.onSurfaceVariant),
                       ],
@@ -960,13 +1209,13 @@ class SettingsTab extends StatelessWidget {
                     onTap: onOpenDifficulty,
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
                 Text("Appearance",
                     style: Theme.of(context)
                         .textTheme
                         .labelLarge
                         ?.copyWith(color: cs.onSurfaceVariant)),
-                const SizedBox(height: 10),
+                const SizedBox(height: 8),
                 GlassCard(
                   child: SettingsRow(
                     icon: Icons.brightness_6_rounded,
@@ -986,7 +1235,7 @@ class SettingsTab extends StatelessWidget {
                               .bodyMedium
                               ?.copyWith(fontWeight: FontWeight.w700),
                         ),
-                        const SizedBox(width: 6),
+                        const SizedBox(width: 4),
                         Icon(Icons.chevron_right_rounded,
                             color: cs.onSurfaceVariant),
                       ],
@@ -1059,13 +1308,13 @@ class SettingsTab extends StatelessWidget {
                     },
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
                 Text("Support",
                     style: Theme.of(context)
                         .textTheme
                         .labelLarge
                         ?.copyWith(color: cs.onSurfaceVariant)),
-                const SizedBox(height: 10),
+                const SizedBox(height: 8),
                 GlassCard(
                   child: Column(
                     children: [
@@ -1078,7 +1327,7 @@ class SettingsTab extends StatelessWidget {
                         onTap: onPrivacyPolicy,
                       ),
                       Divider(
-                          height: 12,
+                          height: 8,
                           color: cs.outlineVariant.withOpacity(0.35)),
                       SettingsRow(
                         icon: Icons.star_rate_rounded,
@@ -1091,7 +1340,7 @@ class SettingsTab extends StatelessWidget {
                     ],
                   ),
                 ),
-                const SizedBox(height: 18),
+                const SizedBox(height: 4),
               ],
             ),
           ),
@@ -1227,6 +1476,37 @@ class _AppSelectionPageState extends State<AppSelectionPage> {
     return (a.isNotEmpty ? a[0] : "") + (b.isNotEmpty ? b[0] : "");
   }
 
+  Future<void> _saveSelectedApps() async {
+    if (widget.editingDisabled) {
+      Navigator.pop(context);
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Lock selected apps?"),
+        content: const Text(
+          "Opening these apps will require you to solve one chess puzzle.\n"
+          "You can change this anytime by solving a puzzle.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text("Cancel"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text("Lock Apps"),
+          ),
+        ],
+      ),
+    );
+
+    if (!mounted || confirmed != true) return;
+    Navigator.pop(context, _selected);
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -1236,8 +1516,8 @@ class _AppSelectionPageState extends State<AppSelectionPage> {
         title: Text("Locked apps (${_selected.length})"),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, _selected),
-            child: const Text("Done"),
+            onPressed: _saveSelectedApps,
+            child: const Text("Save"),
           )
         ],
       ),
@@ -1343,10 +1623,10 @@ class GlassCard extends StatelessWidget {
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: cs.surfaceContainerHighest.withOpacity(0.55),
-        borderRadius: BorderRadius.circular(22),
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(color: cs.outlineVariant.withOpacity(0.45)),
       ),
       child: child,
@@ -1427,8 +1707,8 @@ class AppIconPill extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
 
     return Container(
-      width: 42,
-      height: 42,
+      width: 38,
+      height: 38,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         color: cs.surfaceContainerHighest.withOpacity(0.55),
@@ -1439,8 +1719,8 @@ class AppIconPill extends StatelessWidget {
             ? ClipOval(
                 child: Image.memory(
                   iconBytes!,
-                  width: 26,
-                  height: 26,
+                  width: 24,
+                  height: 24,
                   fit: BoxFit.contain,
                 ),
               )
@@ -1473,16 +1753,16 @@ class StatChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
       decoration: BoxDecoration(
         color: cs.surfaceContainerHighest.withOpacity(0.35),
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(color: cs.outlineVariant.withOpacity(0.45)),
       ),
       child: Row(
         children: [
           Icon(icon, size: 18, color: cs.primary),
-          const SizedBox(width: 8),
+          const SizedBox(width: 6),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1492,7 +1772,7 @@ class StatChip extends StatelessWidget {
                         .textTheme
                         .bodySmall
                         ?.copyWith(color: cs.onSurfaceVariant)),
-                const SizedBox(height: 2),
+                const SizedBox(height: 1),
                 Text(value,
                     style: Theme.of(context)
                         .textTheme
@@ -1528,22 +1808,22 @@ class SettingsRow extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(18),
+      borderRadius: BorderRadius.circular(14),
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
+        padding: const EdgeInsets.symmetric(vertical: 5),
         child: Row(
           children: [
             Container(
-              width: 42,
-              height: 42,
+              width: 38,
+              height: 38,
               decoration: BoxDecoration(
                 color: cs.surfaceContainerHighest.withOpacity(0.35),
-                borderRadius: BorderRadius.circular(14),
+                borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: cs.outlineVariant.withOpacity(0.45)),
               ),
               child: Icon(icon, color: cs.primary),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 10),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1589,19 +1869,19 @@ class ActionTile extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(18),
+      borderRadius: BorderRadius.circular(14),
       child: Container(
         width: double.infinity,
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
           color: cs.surfaceContainerHighest.withOpacity(0.40),
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(14),
           border: Border.all(color: cs.outlineVariant.withOpacity(0.45)),
         ),
         child: Row(
           children: [
             Icon(icon, color: cs.primary),
-            const SizedBox(width: 12),
+            const SizedBox(width: 10),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,

@@ -185,6 +185,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   late final LockStateController _lockState;
   late final StatsRepository _statsRepository;
   late final PuzzleQueueService _puzzleQueue;
+  String? _ownPackageName;
 
   DateTime? get _unlockedUntil => _lockState.unlockedUntil;
   set _unlockedUntil(DateTime? value) => _lockState.unlockedUntil = value;
@@ -208,6 +209,10 @@ class _ChessLockShellState extends State<ChessLockShell>
 
   int _progressIndex = 0;
   bool _solved = false;
+  bool _unlockAvailable = false;
+  bool _extraPuzzleMode = false;
+  bool _puzzleSolvedChoiceShown = false;
+  bool _puzzleSolvedDialogShowing = false;
 
   bool _loadingPuzzle = false;
   String? _loadError;
@@ -243,8 +248,10 @@ class _ChessLockShellState extends State<ChessLockShell>
 
   // Shared prefs keys
   static const _kDifficulty = "puzzleDifficulty";
+  static const _kOnboardingComplete = "onboardingComplete";
 
   bool _usageAccessGranted = false; // backend only
+  bool _onboardingDialogQueued = false;
 
   int _statSolved = 0;
   int _statBestRating = 0;
@@ -257,7 +264,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   // Hint + Skip ads
   // =========================
   static const String _rewardedAdUnitId =
-      "ca-app-pub-8108010703558411/1847579539";
+      "ca-app-pub-3940256099942544/5224354917";
 
   RewardedAd? _rewardedAd;
   Future<RewardedAd?>? _rewardedAdLoadFuture;
@@ -314,6 +321,7 @@ class _ChessLockShellState extends State<ChessLockShell>
     await _loadQueuesFromPrefs(); // ✅ load stored queues
     await _prefetchIcons();
     await _ensureUsageAccessIfNeeded();
+    await _maybeShowFirstLaunchOnboarding();
 
     // ✅ Show a puzzle instantly if queue has one, otherwise cached, otherwise network.
     await _showNextPuzzleForCurrentDifficulty(reason: "init");
@@ -348,6 +356,70 @@ class _ChessLockShellState extends State<ChessLockShell>
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
     );
+  }
+
+  Future<void> _maybeShowFirstLaunchOnboarding() async {
+    final prefs = await _prefsFuture;
+
+    if (_lockedPackages.isNotEmpty) {
+      if (prefs.getBool(_kOnboardingComplete) != true) {
+        await prefs.setBool(_kOnboardingComplete, true);
+      }
+      return;
+    }
+
+    if (prefs.getBool(_kOnboardingComplete) == true ||
+        _onboardingDialogQueued) {
+      return;
+    }
+
+    _onboardingDialogQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(_showFirstLaunchOnboardingDialog());
+    });
+  }
+
+  Future<void> _completeOnboarding() async {
+    final prefs = await _prefsFuture;
+    await prefs.setBool(_kOnboardingComplete, true);
+  }
+
+  Future<void> _showFirstLaunchOnboardingDialog() async {
+    if (!mounted) return;
+
+    if (_lockedPackages.isNotEmpty) {
+      await _completeOnboarding();
+      return;
+    }
+
+    final chooseApps = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Welcome to ChessLock"),
+        content: const Text(
+          "Pick any distracting apps you want to lock.\n"
+          "You will need solve chess puzzle to use those apps.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text("Later"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text("Choose Apps"),
+          ),
+        ],
+      ),
+    );
+
+    await _completeOnboarding();
+    if (!mounted) return;
+
+    if (chooseApps == true) {
+      await _openAppPicker(requireSolved: false);
+    }
   }
 
   bool get _isUnlocked => _lockState.isUnlocked;
@@ -387,8 +459,13 @@ class _ChessLockShellState extends State<ChessLockShell>
 
   bool get _isBlackToMove => _isBlackToMoveFromFen(_positionFen);
 
-  String get _sideToMoveLabel =>
-      _isBlackToMove ? "Black to move" : "White to move";
+  bool get _canUnlockApps => _unlockAvailable || _solved;
+
+  String get _sideToMoveLabel {
+    if (_loadingPuzzle && _canUnlockApps) return "Loading next puzzle…";
+    if (_solved) return "Puzzle solved";
+    return _isBlackToMove ? "Black to move" : "White to move";
+  }
 
   bool _isBlackToMoveFromFen(String fen) {
     final parts = fen.split(" ");
@@ -411,11 +488,52 @@ class _ChessLockShellState extends State<ChessLockShell>
   // Launchable apps + icons
   // =========================
   Future<List<Map<String, dynamic>>> _getLaunchableAppsRaw() async {
+    final ownPackageName = await _getOwnPackageName();
     final raw =
         await _platform.invokeMethod<List<dynamic>>("getLaunchableApps");
     final list =
         (raw ?? []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
-    return list;
+    return list.where((m) {
+      final pkg = (m["packageName"] ?? "").toString();
+      return pkg.isNotEmpty && pkg != ownPackageName;
+    }).toList();
+  }
+
+  Future<String?> _getOwnPackageName() async {
+    final cached = _ownPackageName;
+    if (cached != null && cached.isNotEmpty) return cached;
+
+    try {
+      final pkg =
+          (await _platform.invokeMethod<String>("getOwnPackageName"))?.trim();
+      if (pkg == null || pkg.isEmpty) return null;
+      _ownPackageName = pkg;
+      return pkg;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Set<String> _withoutOwnPackage(
+    Set<String> packages,
+    String? ownPackageName,
+  ) {
+    return packages
+        .map((pkg) => pkg.trim())
+        .where((pkg) => pkg.isNotEmpty && pkg != ownPackageName)
+        .toSet();
+  }
+
+  Future<Set<String>> _sanitizeLockedPackages(Set<String> packages) async {
+    return _withoutOwnPackage(packages, await _getOwnPackageName());
+  }
+
+  Future<void> _removeOwnPackageFromLockedAppsIfPresent() async {
+    final sanitized = await _sanitizeLockedPackages(_lockedPackages);
+    if (setEquals(sanitized, _lockedPackages)) return;
+
+    _lockedPackages = sanitized;
+    await _saveLockedPackages();
   }
 
   static const int _maxIconPngBytes = 512 * 1024;
@@ -466,6 +584,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   // =========================
   Future<void> _loadPrefs() async {
     await _lockState.load();
+    await _removeOwnPackageFromLockedAppsIfPresent();
     final prefs = await _prefsFuture;
 
     final savedDiff = prefs.getString(_kDifficulty);
@@ -514,6 +633,7 @@ class _ChessLockShellState extends State<ChessLockShell>
     final diff = _difficulty;
     final hadPuzzleAlready = _puzzle != null;
 
+    _clearHintHighlight(notify: false);
     setState(() {
       _loadingPuzzle = true;
       _loadError = null;
@@ -596,7 +716,8 @@ class _ChessLockShellState extends State<ChessLockShell>
 
   Future<void> _syncWatcherStateToNative() async {
     try {
-      final lockedPackages = _lockedPackages.toList()..sort();
+      final lockedPackages =
+          (await _sanitizeLockedPackages(_lockedPackages)).toList()..sort();
       await _platform.invokeMethod("syncWatcherState", {
         "lockedPackages": lockedPackages,
         "lockEnabled": _lockEnabled,
@@ -756,6 +877,13 @@ class _ChessLockShellState extends State<ChessLockShell>
     );
   }
 
+  void _resetSolvedUnlockFlow() {
+    _unlockAvailable = false;
+    _extraPuzzleMode = false;
+    _puzzleSolvedChoiceShown = false;
+    _puzzleSolvedDialogShowing = false;
+  }
+
   Future<void> _syncExpiry() async {
     if (_indefiniteUnlock) {
       if (_lockEnabled) {
@@ -770,7 +898,7 @@ class _ChessLockShellState extends State<ChessLockShell>
     if (until != null && DateTime.now().isAfter(until)) {
       final saved = await _relockNow(resetPuzzle: true);
       if (mounted && saved) {
-        _snack("Locked again. Solve to take a break.");
+        _snack("Locked again. Solve to unlock apps.");
       }
       return;
     }
@@ -787,6 +915,7 @@ class _ChessLockShellState extends State<ChessLockShell>
     _indefiniteUnlock = false;
     _unlockedUntil = null;
     _lockEnabled = true;
+    _resetSolvedUnlockFlow();
     if (mounted) setState(() {});
 
     final saved =
@@ -809,6 +938,7 @@ class _ChessLockShellState extends State<ChessLockShell>
     }
 
     _lockEnabled = false;
+    _resetSolvedUnlockFlow();
     if (mounted) setState(() {});
 
     final saved =
@@ -823,6 +953,7 @@ class _ChessLockShellState extends State<ChessLockShell>
     _indefiniteUnlock = false;
     _unlockedUntil = DateTime.now().add(const Duration(hours: 24));
     _lockEnabled = false;
+    _resetSolvedUnlockFlow();
     if (mounted) setState(() {});
 
     final saved =
@@ -839,7 +970,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   void _loadPuzzle(ChessPuzzle puzzle, {required bool isNewPuzzle}) {
     _autoCheckTimer?.cancel();
     _checkTimeout?.cancel();
-    _hintBlinkTimer?.cancel();
+    _clearHintHighlight(notify: false);
     _checkToken++;
 
     final engine = ch.Chess.fromFEN(puzzle.fen);
@@ -855,9 +986,6 @@ class _ChessLockShellState extends State<ChessLockShell>
     _setBoardFen(_positionFen);
 
     _userPlaysBlack = _isBlackToMoveFromFen(puzzle.fen);
-
-    _hintFromSquare = null;
-    _hintBlinkOn = false;
 
     if (isNewPuzzle) {
       _attemptsThisPuzzle = 0;
@@ -883,6 +1011,7 @@ class _ChessLockShellState extends State<ChessLockShell>
     final currentFen = _boardController.fen;
     if (currentFen == _positionFen) return;
 
+    _clearHintHighlight(notify: false);
     _pendingUserFen = currentFen;
     _startChecking();
     _scheduleAutoCheck();
@@ -944,10 +1073,10 @@ class _ChessLockShellState extends State<ChessLockShell>
     }
 
     if (_progressIndex >= puzzle.solutionUci.length) {
-      _solved = true;
+      _markPuzzleSolved(puzzle, recordStats: false);
       _stopChecking();
       setState(() {});
-      _snack("Solved ✅");
+      _handlePuzzleSolved();
       return;
     }
 
@@ -982,11 +1111,10 @@ class _ChessLockShellState extends State<ChessLockShell>
 
     if (_progressIndex >= puzzle.solutionUci.length) {
       _setBoardFen(_positionFen);
-      _solved = true;
-      _recordSolved(puzzle.rating);
+      _markPuzzleSolved(puzzle, recordStats: true);
       _stopChecking();
       setState(() {});
-      _snack("Solved ✅ You can take a break.");
+      _handlePuzzleSolved();
       return;
     }
 
@@ -1014,13 +1142,14 @@ class _ChessLockShellState extends State<ChessLockShell>
       _setBoardFen(_positionFen);
 
       if (_progressIndex >= puzzle.solutionUci.length) {
-        _solved = true;
-        _recordSolved(puzzle.rating);
-        _snack("Solved ✅ You can take a break.");
+        _markPuzzleSolved(puzzle, recordStats: true);
       }
 
       _stopChecking();
       setState(() {});
+      if (_solved) {
+        _handlePuzzleSolved();
+      }
     });
   }
 
@@ -1033,6 +1162,78 @@ class _ChessLockShellState extends State<ChessLockShell>
         if (mounted) _snack("Couldn't save stats.");
       }),
     );
+  }
+
+  void _markPuzzleSolved(ChessPuzzle puzzle, {required bool recordStats}) {
+    _solved = true;
+    _unlockAvailable = true;
+    if (recordStats) {
+      _recordSolved(puzzle.rating);
+    }
+  }
+
+  void _handlePuzzleSolved() {
+    if (!mounted) return;
+
+    if (_extraPuzzleMode) {
+      _snack("Solved. Loading next puzzle…");
+      unawaited(_loadExtraPuzzle());
+      return;
+    }
+
+    if (_puzzleSolvedChoiceShown || _puzzleSolvedDialogShowing) {
+      if (!_puzzleSolvedDialogShowing) {
+        _snack("Puzzle solved");
+      }
+      return;
+    }
+    _puzzleSolvedChoiceShown = true;
+    unawaited(_showPuzzleSolvedDialog());
+  }
+
+  Future<void> _loadExtraPuzzle() async {
+    try {
+      await _showNextPuzzleForCurrentDifficulty(reason: "extra");
+    } catch (_) {
+      if (mounted) _snack("Puzzle load failed.");
+    }
+  }
+
+  Future<void> _showPuzzleSolvedDialog() async {
+    if (_puzzleSolvedDialogShowing || !mounted) return;
+    _puzzleSolvedDialogShowing = true;
+
+    final choice = await showDialog<_PuzzleSolvedChoice>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Puzzle solved"),
+        content: const Text(
+          "You can now unlock your apps for some time but we encourage you "
+          "to solve more puzzles to improve your chess faster.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, _PuzzleSolvedChoice.unlockApps),
+            child: const Text("Unlock apps"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, _PuzzleSolvedChoice.solveMore),
+            child: const Text("Solve more puzzles"),
+          ),
+        ],
+      ),
+    );
+
+    if (!mounted) return;
+    _puzzleSolvedDialogShowing = false;
+
+    if (choice == _PuzzleSolvedChoice.solveMore) {
+      setState(() => _extraPuzzleMode = true);
+      await _loadExtraPuzzle();
+    } else if (choice == _PuzzleSolvedChoice.unlockApps) {
+      await _openUnlockAppsFlow();
+    }
   }
 
   // =========================
@@ -1320,23 +1521,23 @@ class _ChessLockShellState extends State<ChessLockShell>
 
   void _blinkHintFromSquare(String fromSquare) {
     _hintBlinkTimer?.cancel();
+    _hintBlinkTimer = null;
     _hintFromSquare = fromSquare;
     _hintBlinkOn = true;
-    setState(() {});
+    if (mounted) setState(() {});
+  }
 
-    int ticks = 0;
-    _hintBlinkTimer = Timer.periodic(const Duration(milliseconds: 300), (_) {
-      if (!mounted) return;
-      ticks++;
-      _hintBlinkOn = !_hintBlinkOn;
+  void _clearHintHighlight({required bool notify}) {
+    _hintBlinkTimer?.cancel();
+    _hintBlinkTimer = null;
+
+    final hadHint = _hintFromSquare != null || _hintBlinkOn;
+    _hintFromSquare = null;
+    _hintBlinkOn = false;
+
+    if (notify && hadHint && mounted) {
       setState(() {});
-      if (ticks >= 12) {
-        _hintBlinkTimer?.cancel();
-        _hintBlinkOn = false;
-        _hintFromSquare = null;
-        setState(() {});
-      }
-    });
+    }
   }
 
   // =========================
@@ -1363,8 +1564,16 @@ class _ChessLockShellState extends State<ChessLockShell>
   // =========================
   // UI actions (break picker etc.)
   // =========================
+  Future<void> _openUnlockAppsFlow() async {
+    _extraPuzzleMode = false;
+    _goHome();
+    await Future<void>.delayed(Duration.zero);
+    if (!mounted) return;
+    await _showBreakTimePicker();
+  }
+
   Future<void> _showBreakTimePicker() async {
-    if (!_solved) {
+    if (!_canUnlockApps) {
       _snack("Solve the puzzle first.");
       _goPuzzle();
       return;
@@ -1408,7 +1617,7 @@ class _ChessLockShellState extends State<ChessLockShell>
                     overflowSpacing: 8,
                     children: [
                       Text(
-                        "Select break time",
+                        "Choose unlock time",
                         style: Theme.of(ctx).textTheme.titleMedium,
                       ),
                       TextButton(
@@ -1421,7 +1630,7 @@ class _ChessLockShellState extends State<ChessLockShell>
                           final saved = await _unlockForMinutes(selected);
                           if (!mounted) return;
                           if (saved) {
-                            _snack("Break started for $selected minutes.");
+                            _snack("Apps unlocked for $selected minutes.");
                           }
                         },
                         child: const Text("Start"),
@@ -1466,7 +1675,7 @@ class _ChessLockShellState extends State<ChessLockShell>
                   ),
                   const SizedBox(height: 10),
                   Text(
-                    "Locked apps stay unlocked for the selected break time.",
+                    "How long should your locked apps stay open?",
                     style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
                           color: cs.onSurfaceVariant,
                         ),
@@ -1486,7 +1695,7 @@ class _ChessLockShellState extends State<ChessLockShell>
           context: context,
           builder: (ctx) => AlertDialog(
             title: const Text("Turn lock on?"),
-            content: const Text("You’ll need to solve again to take a break."),
+            content: const Text("You’ll need to solve again to unlock apps."),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx, false),
@@ -1514,7 +1723,7 @@ class _ChessLockShellState extends State<ChessLockShell>
       return;
     }
 
-    if (!_solved) {
+    if (!_canUnlockApps) {
       _snack("Solve the puzzle first.");
       _goPuzzle();
       return;
@@ -1662,7 +1871,7 @@ class _ChessLockShellState extends State<ChessLockShell>
                     final isSel = d == _difficulty;
                     return ListTile(
                       contentPadding: EdgeInsets.zero,
-                      title: Text(titleCase(d)),
+                      title: Text(getDifficultyDisplayName(d)),
                       trailing: isSel ? const Icon(Icons.check_rounded) : null,
                       onTap: () => Navigator.pop(ctx, d),
                     );
@@ -1681,18 +1890,22 @@ class _ChessLockShellState extends State<ChessLockShell>
     await _showNextPuzzleForCurrentDifficulty(reason: "difficulty");
   }
 
-  Future<void> _openAppPicker() async {
-    if (!_solved) {
+  Future<void> _openAppPicker({bool requireSolved = true}) async {
+    final editingExistingLocks = _lockedPackages.isNotEmpty;
+    if (requireSolved && editingExistingLocks && !_canUnlockApps) {
       _snack("Solve a puzzle to edit locked apps.");
       _goPuzzle();
       return;
     }
 
+    final selected = await _sanitizeLockedPackages(_lockedPackages);
+    if (!mounted) return;
+
     final updated = await Navigator.push<Set<String>>(
       context,
       MaterialPageRoute(
         builder: (_) => AppSelectionPage(
-          selected: _lockedPackages,
+          selected: selected,
           editingDisabled: false,
           fetchApps: _getLaunchableAppsRaw,
         ),
@@ -1701,11 +1914,15 @@ class _ChessLockShellState extends State<ChessLockShell>
 
     if (!mounted || updated == null) return;
 
-    setState(() => _lockedPackages = updated);
+    final sanitized = await _sanitizeLockedPackages(updated);
+    if (!mounted) return;
+
+    setState(() => _lockedPackages = sanitized);
     await _saveLockedPackages();
+    await _completeOnboarding();
     await _ensureUsageAccessIfNeeded();
     await _prefetchIcons();
-    _snack("Locked apps: ${_lockedPackages.length}");
+    _snack("Apps locked.");
   }
 
   static const String _privacyPolicyUrl =
@@ -1728,9 +1945,16 @@ class _ChessLockShellState extends State<ChessLockShell>
     _snack("Rating will be available after ChessUnlock is on Google Play.");
   }
 
-  void _goHome() => setState(() => _tab = 0);
-  void _goPuzzle() => setState(() => _tab = 1);
-  void _goSettings() => setState(() => _tab = 2);
+  void _selectTab(int index) {
+    if (_tab == 1 && index != 1) {
+      _extraPuzzleMode = false;
+    }
+    setState(() => _tab = index);
+  }
+
+  void _goHome() => _selectTab(0);
+  void _goPuzzle() => _selectTab(1);
+  void _goSettings() => _selectTab(2);
 
   // =========================
   // UI
@@ -1746,17 +1970,20 @@ class _ChessLockShellState extends State<ChessLockShell>
           index: _tab,
           children: [
             HomeTab(
+              active: _tab == 0,
               lockEnabled: _lockEnabled,
               indefiniteUnlock: _indefiniteUnlock,
               unlockRemaining: _unlockRemaining,
               lockedPackages: _lockedPackages,
               difficulty: _difficulty,
-              solved: _solved,
+              solved: _canUnlockApps,
               statSolved: _statSolved,
               statBestRating: _statBestRating,
               accuracyPct: _accuracyPct,
               iconsByPkg: _iconsByPkg,
-              onEditLockedApps: _openAppPicker,
+              onEditLockedApps: () {
+                unawaited(_openAppPicker());
+              },
               onBreakTime: _showBreakTimePicker,
               onOpenDifficulty: () {
                 _goSettings();
@@ -1764,10 +1991,13 @@ class _ChessLockShellState extends State<ChessLockShell>
               },
             ),
             PuzzleTab(
+              active: _tab == 1,
               puzzle: _puzzle,
               loading: _loadingPuzzle,
               loadError: _loadError,
               sideToMoveLabel: _sideToMoveLabel,
+              solved: _solved,
+              canUnlockApps: _canUnlockApps,
               canUserMove: _canUserMove,
               userPlaysBlack: _userPlaysBlack,
               isChecking: _isChecking,
@@ -1775,11 +2005,15 @@ class _ChessLockShellState extends State<ChessLockShell>
               onHint: _onHintPressed,
               skipEnabled: _skipAvailable,
               onSkip: _onSkipPressed,
+              onUnlockApps: () {
+                unawaited(_openUnlockAppsFlow());
+              },
               hintFromSquare: _hintFromSquare,
               hintBlinkOn: _hintBlinkOn,
               boardController: _boardController,
             ),
             SettingsTab(
+              active: _tab == 2,
               lockEnabled: _lockEnabled,
               indefiniteUnlock: _indefiniteUnlock,
               unlockRemaining: _unlockRemaining,
@@ -1796,7 +2030,7 @@ class _ChessLockShellState extends State<ChessLockShell>
       ),
       bottomNavigationBar: PremiumNavBar(
         index: _tab,
-        onChanged: (i) => setState(() => _tab = i),
+        onChanged: _selectTab,
       ),
     );
   }
@@ -1808,4 +2042,9 @@ enum _RewardedAdResult {
   dismissedBeforeReward,
   unavailable,
   failedToShow,
+}
+
+enum _PuzzleSolvedChoice {
+  solveMore,
+  unlockApps,
 }
