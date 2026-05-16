@@ -1354,7 +1354,7 @@ class _ChessLockShellState extends State<ChessLockShell>
         ) ??
         false;
 
-    if (!confirmed || !mounted) return;
+    if (!confirmed || !mounted) return; 
 
     setState(() => _rewardedActionInProgress = true);
     final result = await _showRewardedAd(onRewardEarned: onRewardEarned);
