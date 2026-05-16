@@ -263,7 +263,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   // Hint + Skip ads
   // =========================
   static const String _rewardedAdUnitId =
-      "ca-app-pub-3940256099942544/5224354917";
+      "ca-app-pub-8108010703558411/1847579539";
 
   RewardedAd? _rewardedAd;
   Future<RewardedAd?>? _rewardedAdLoadFuture;
