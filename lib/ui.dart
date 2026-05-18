@@ -164,7 +164,7 @@ class BannerAdSlot extends StatefulWidget {
 
 class _BannerAdSlotState extends State<BannerAdSlot>
     with WidgetsBindingObserver {
-  static const _bannerAdUnitId = "ca-app-pub-8108010703558411/9765598008";
+  static const _bannerAdUnitId = "ca-app-pub-3940256099942544/6300978111";
   static const _initialRetryDelay = Duration(seconds: 30);
   static const _maxRetryDelay = Duration(minutes: 5);
   static const _refreshCooldown = Duration(minutes: 1);

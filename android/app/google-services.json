@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "785745736507",
+    "project_id": "chessunlock-655a7",
+    "storage_bucket": "chessunlock-655a7.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:785745736507:android:c1cf233a376ea31996fd1e",
+        "android_client_info": {
+          "package_name": "com.aimlessoul.chessunlock"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAYRvPyihZuydncj5Vk7g2CfSZ_erAYfBU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:advanced_chess_board/chess_board_controller.dart';
 import 'package:chess/chess.dart' as ch;
@@ -11,6 +12,7 @@ import 'package:flutter/services.dart' hide Uint8List;
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'firebase_options.dart';
 import 'services/lock_state_controller.dart';
 import 'services/puzzle_queue_service.dart';
 import 'services/stats_repository.dart';
@@ -18,6 +20,9 @@ import 'ui.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
   await _initializeMobileAds();
   runApp(const MyApp());
 }
@@ -263,7 +268,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   // Hint + Skip ads
   // =========================
   static const String _rewardedAdUnitId =
-      "ca-app-pub-8108010703558411/1847579539";
+      "ca-app-pub-3940256099942544/5224354917";
 
   RewardedAd? _rewardedAd;
   Future<RewardedAd?>? _rewardedAdLoadFuture;
