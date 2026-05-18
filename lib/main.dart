@@ -13,6 +13,7 @@ import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'firebase_options.dart';
+import 'services/analytics_service.dart';
 import 'services/lock_state_controller.dart';
 import 'services/puzzle_queue_service.dart';
 import 'services/stats_repository.dart';
@@ -296,6 +297,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   @override
   void initState() {
     super.initState();
+    AppAnalytics.homeScreenViewed();
     _lockState = LockStateController(_prefsFuture);
     _statsRepository = StatsRepository(_prefsFuture);
     _puzzleQueue = PuzzleQueueService(
@@ -397,6 +399,7 @@ class _ChessLockShellState extends State<ChessLockShell>
       return;
     }
 
+    AppAnalytics.onboardingScreenViewed();
     final chooseApps = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -407,11 +410,17 @@ class _ChessLockShellState extends State<ChessLockShell>
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
+            onPressed: () {
+              AppAnalytics.onboardingLaterButtonTapped();
+              Navigator.pop(ctx, false);
+            },
             child: const Text("Later"),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
+            onPressed: () {
+              AppAnalytics.onboardingChooseAppsButtonTapped();
+              Navigator.pop(ctx, true);
+            },
             child: const Text("Choose Apps"),
           ),
         ],
@@ -612,6 +621,7 @@ class _ChessLockShellState extends State<ChessLockShell>
       {required String reason}) async {
     if (!mounted) return;
     final diff = _difficulty;
+    final isExtraPuzzle = _extraPuzzleMode || reason == "extra";
     final hadPuzzleAlready = _puzzle != null;
 
     _clearHintHighlight(notify: false);
@@ -625,6 +635,15 @@ class _ChessLockShellState extends State<ChessLockShell>
 
     if (next != null) {
       _loadPuzzle(next, isNewPuzzle: true);
+      if (isExtraPuzzle) {
+        AppAnalytics.practicePuzzleStarted(
+          difficulty: diff,
+        );
+      } else {
+        AppAnalytics.lockedAppPuzzleStarted(
+          difficulty: diff,
+        );
+      }
       setState(() {
         _loadingPuzzle = false;
         _loadError = null;
@@ -879,6 +898,7 @@ class _ChessLockShellState extends State<ChessLockShell>
     if (until != null && DateTime.now().isAfter(until)) {
       final saved = await _relockNow(resetPuzzle: true);
       if (mounted && saved) {
+        AppAnalytics.unlockExpired();
         _snack("Locked again. Solve to unlock apps.");
       }
       return;
@@ -1146,8 +1166,20 @@ class _ChessLockShellState extends State<ChessLockShell>
   }
 
   void _markPuzzleSolved(ChessPuzzle puzzle, {required bool recordStats}) {
+    final wasSolved = _solved;
     _solved = true;
     _unlockAvailable = true;
+    if (!wasSolved) {
+      if (_extraPuzzleMode) {
+        AppAnalytics.practicePuzzleSolved(
+          difficulty: _difficulty,
+        );
+      } else {
+        AppAnalytics.lockedAppPuzzleSolved(
+          difficulty: _difficulty,
+        );
+      }
+    }
     if (recordStats) {
       _recordSolved(puzzle.rating);
     }
@@ -1183,6 +1215,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   Future<void> _showPuzzleSolvedDialog() async {
     if (_puzzleSolvedDialogShowing || !mounted) return;
     _puzzleSolvedDialogShowing = true;
+    AppAnalytics.puzzleSolvedPopupShown();
 
     final choice = await showDialog<_PuzzleSolvedChoice>(
       context: context,
@@ -1195,11 +1228,18 @@ class _ChessLockShellState extends State<ChessLockShell>
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx, _PuzzleSolvedChoice.unlockApps),
+            onPressed: () {
+              AppAnalytics.puzzleSolvedUnlockAppsTapped();
+              Navigator.pop(ctx, _PuzzleSolvedChoice.unlockApps);
+            },
             child: const Text("Unlock apps"),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(ctx, _PuzzleSolvedChoice.solveMore),
+            onPressed: () {
+              AppAnalytics.solveMorePuzzlesTapped();
+              AppAnalytics.puzzleSolvedSolveMoreTapped();
+              Navigator.pop(ctx, _PuzzleSolvedChoice.solveMore);
+            },
             child: const Text("Solve more puzzles"),
           ),
         ],
@@ -1239,7 +1279,9 @@ class _ChessLockShellState extends State<ChessLockShell>
 
   Future<void> _onHintPressed() async {
     if (!_hintAvailable) return;
+    AppAnalytics.hintButtonTapped();
     await _showRewardedActionDialog(
+      action: _RewardedPuzzleAction.hint,
       title: "Get a hint",
       message: "Need a little help?\n\n"
           "Watching an ad will show which piece to move.\n\n"
@@ -1250,7 +1292,9 @@ class _ChessLockShellState extends State<ChessLockShell>
 
   Future<void> _onSkipPressed() async {
     if (!_skipAvailable) return;
+    AppAnalytics.skipButtonTapped();
     await _showRewardedActionDialog(
+      action: _RewardedPuzzleAction.skip,
       title: "Skip puzzle",
       message: "Want to skip this puzzle?\n\n"
           "Watching an ad will load a new puzzle.\n\n"
@@ -1260,6 +1304,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   }
 
   Future<void> _showRewardedActionDialog({
+    required _RewardedPuzzleAction action,
     required String title,
     required String message,
     required VoidCallback onRewardEarned,
@@ -1267,6 +1312,7 @@ class _ChessLockShellState extends State<ChessLockShell>
     var watchBusy = false;
     String? errorText;
 
+    _logRewardedDialogShown(action);
     final confirmed = await showDialog<bool>(
           context: context,
           builder: (ctx) => StatefulBuilder(
@@ -1290,13 +1336,17 @@ class _ChessLockShellState extends State<ChessLockShell>
               ),
               actions: [
                 TextButton(
-                  onPressed: () => Navigator.pop(ctx, false),
+                  onPressed: () {
+                    _logRewardedDialogCancelTapped(action);
+                    Navigator.pop(ctx, false);
+                  },
                   child: const Text("Cancel"),
                 ),
                 FilledButton(
                   onPressed: watchBusy
                       ? null
                       : () async {
+                          _logRewardedDialogWatchAdTapped(action);
                           setDialogState(() {
                             watchBusy = true;
                             errorText = null;
@@ -1306,6 +1356,10 @@ class _ChessLockShellState extends State<ChessLockShell>
                           if (!mounted || !ctx.mounted) return;
 
                           if (!ready) {
+                            _logRewardedAdFailed(
+                              action,
+                              adResult: "not_available",
+                            );
                             setDialogState(() {
                               watchBusy = false;
                               errorText = _rewardedAdUnavailableMessage(
@@ -1341,16 +1395,21 @@ class _ChessLockShellState extends State<ChessLockShell>
     switch (result) {
       case _RewardedAdResult.completed:
       case _RewardedAdResult.dismissedAfterReward:
+        return;
       case _RewardedAdResult.dismissedBeforeReward:
+        _logRewardedAdFailed(action, adResult: "cancelled");
         return;
       case _RewardedAdResult.unavailable:
+        _logRewardedAdFailed(action, adResult: "not_available");
         _snack(_rewardedAdUnavailableMessage(_lastRewardedAdLoadError));
       case _RewardedAdResult.failedToShow:
+        _logRewardedAdFailed(action, adResult: "failed");
         _snack("Ad not available right now. Please try again.");
     }
   }
 
   void _grantHintReward() {
+    AppAnalytics.hintRewardedAdCompleted();
     final puzzle = _puzzle;
     if (puzzle == null) return;
     if (_progressIndex >= puzzle.solutionUci.length) return;
@@ -1362,8 +1421,49 @@ class _ChessLockShellState extends State<ChessLockShell>
   }
 
   void _grantSkipReward() {
+    AppAnalytics.skipRewardedAdCompleted();
+    AppAnalytics.puzzleSkippedAfterAd();
     _snack("Skipped. New puzzle.");
     _queuePuzzleRefresh("skip");
+  }
+
+  void _logRewardedDialogShown(_RewardedPuzzleAction action) {
+    switch (action) {
+      case _RewardedPuzzleAction.hint:
+        AppAnalytics.hintDialogShown();
+      case _RewardedPuzzleAction.skip:
+        AppAnalytics.skipDialogShown();
+    }
+  }
+
+  void _logRewardedDialogWatchAdTapped(_RewardedPuzzleAction action) {
+    switch (action) {
+      case _RewardedPuzzleAction.hint:
+        AppAnalytics.hintDialogWatchAdTapped();
+      case _RewardedPuzzleAction.skip:
+        AppAnalytics.skipDialogWatchAdTapped();
+    }
+  }
+
+  void _logRewardedDialogCancelTapped(_RewardedPuzzleAction action) {
+    switch (action) {
+      case _RewardedPuzzleAction.hint:
+        AppAnalytics.hintDialogCancelTapped();
+      case _RewardedPuzzleAction.skip:
+        AppAnalytics.skipDialogCancelTapped();
+    }
+  }
+
+  void _logRewardedAdFailed(
+    _RewardedPuzzleAction action, {
+    required String adResult,
+  }) {
+    switch (action) {
+      case _RewardedPuzzleAction.hint:
+        AppAnalytics.hintRewardedAdFailed(adResult);
+      case _RewardedPuzzleAction.skip:
+        AppAnalytics.skipRewardedAdFailed(adResult);
+    }
   }
 
   Future<bool> _prepareRewardedAdForWatch() async {
@@ -1542,6 +1642,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   // UI actions (break picker etc.)
   // =========================
   Future<void> _openUnlockAppsFlow() async {
+    AppAnalytics.unlockAppsButtonTapped();
     _extraPuzzleMode = false;
     _goHome();
     await Future<void>.delayed(Duration.zero);
@@ -1611,10 +1712,12 @@ class _ChessLockShellState extends State<ChessLockShell>
                   ),
                   FilledButton(
                     onPressed: () async {
+                      AppAnalytics.unlockDurationSelected(selected);
                       Navigator.pop(ctx);
                       final saved = await _unlockForMinutes(selected);
                       if (!mounted) return;
                       if (saved) {
+                        AppAnalytics.unlockStarted(selected);
                         _snack("Apps unlocked for $selected minutes.");
                       }
                     },
@@ -1702,7 +1805,11 @@ class _ChessLockShellState extends State<ChessLockShell>
       }
       final saved = await _relockNow(resetPuzzle: true);
       if (!mounted) return;
-      if (saved) _snack("Lock ON");
+      if (saved) {
+        AppAnalytics.lockStatusChanged(true);
+        AppAnalytics.appLockResumed();
+        _snack("Lock ON");
+      }
       return;
     }
 
@@ -1756,7 +1863,11 @@ class _ChessLockShellState extends State<ChessLockShell>
                   Navigator.pop(ctx);
                   final saved = await _unlockFor24h();
                   if (!mounted) return;
-                  if (saved) _snack("Unlocked for 24 hours.");
+                  if (saved) {
+                    AppAnalytics.lockStatusChanged(false);
+                    AppAnalytics.appLockPaused(unlockDurationMinutes: 1440);
+                    _snack("Unlocked for 24 hours.");
+                  }
                 },
               ),
               const SizedBox(height: 8),
@@ -1789,7 +1900,11 @@ class _ChessLockShellState extends State<ChessLockShell>
                   if (!mounted || !ok) return;
                   final saved = await _unlockForMinutes(null);
                   if (!mounted) return;
-                  if (saved) _snack("Lock turned off.");
+                  if (saved) {
+                    AppAnalytics.lockStatusChanged(false);
+                    AppAnalytics.appLockPaused();
+                    _snack("Lock turned off.");
+                  }
                 },
               ),
             ],
@@ -1843,8 +1958,12 @@ class _ChessLockShellState extends State<ChessLockShell>
     );
 
     if (!mounted || selected == null) return;
+    final previousDifficulty = _difficulty;
     setState(() => _difficulty = selected);
     await _saveDifficulty();
+    if (selected != previousDifficulty) {
+      AppAnalytics.puzzleDifficultyChanged(selected);
+    }
     await _showNextPuzzleForCurrentDifficulty(reason: "difficulty");
   }
 
@@ -1877,6 +1996,7 @@ class _ChessLockShellState extends State<ChessLockShell>
 
     setState(() => _lockedPackages = sanitized);
     await _saveLockedPackages();
+    AppAnalytics.lockedAppsSelectionSaved(sanitized.length);
     await _completeOnboarding();
     await _ensureUsageAccessIfNeeded();
     await _prefetchIcons();
@@ -1887,6 +2007,7 @@ class _ChessLockShellState extends State<ChessLockShell>
       "https://aimlessoulapps.github.io/chessunlock-legal/";
 
   Future<void> _onPrivacyPolicy() async {
+    AppAnalytics.privacyPolicyTapped();
     try {
       final uri = Uri.parse(_privacyPolicyUrl);
       final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
@@ -1897,22 +2018,52 @@ class _ChessLockShellState extends State<ChessLockShell>
   }
 
   Future<void> _onRateApp() async {
+    AppAnalytics.rateAppTapped();
     // ✅ Correct logic: until the app exists on Play, there’s nothing to open.
     // Later (after Internal/Closed testing upload), we can wire this to Play
     // or use the official in-app review flow.
     _snack("Rating will be available after ChessUnlock is on Google Play.");
   }
 
+  Future<void> _onThemeModeChangedFromSettings(AppThemeMode mode) async {
+    final changed = mode != widget.themeMode;
+    await widget.onThemeModeChanged(mode);
+    if (changed) {
+      AppAnalytics.themeChanged(
+        switch (mode) {
+          AppThemeMode.dark => "dark",
+          AppThemeMode.light => "light",
+          AppThemeMode.system => "system",
+        },
+      );
+    }
+  }
+
   void _selectTab(int index) {
+    final previousTab = _tab;
     if (_tab == 1 && index != 1) {
       _extraPuzzleMode = false;
     }
     setState(() => _tab = index);
+    if (index != previousTab) {
+      _logScreenViewedForTab(index);
+    }
   }
 
   void _goHome() => _selectTab(0);
   void _goPuzzle() => _selectTab(1);
   void _goSettings() => _selectTab(2);
+
+  void _logScreenViewedForTab(int index) {
+    switch (index) {
+      case 0:
+        AppAnalytics.homeScreenViewed();
+      case 1:
+        AppAnalytics.puzzleScreenViewed();
+      case 2:
+        AppAnalytics.settingsScreenViewed();
+    }
+  }
 
   // =========================
   // UI
@@ -1940,9 +2091,15 @@ class _ChessLockShellState extends State<ChessLockShell>
               accuracyPct: _accuracyPct,
               iconsByPkg: _iconsByPkg,
               onEditLockedApps: () {
+                AppAnalytics.editLockedAppsTapped();
                 unawaited(_openAppPicker());
               },
-              onBreakTime: _showBreakTimePicker,
+              onBreakTime: () {
+                if (!_canUnlockApps) {
+                  AppAnalytics.solvePuzzleToUnlockTapped();
+                }
+                unawaited(_showBreakTimePicker());
+              },
               onOpenDifficulty: () {
                 _goSettings();
                 _snack("Change difficulty in Settings.");
@@ -1977,7 +2134,7 @@ class _ChessLockShellState extends State<ChessLockShell>
               unlockRemaining: _unlockRemaining,
               difficulty: _difficulty,
               themeMode: widget.themeMode,
-              onThemeModeChanged: widget.onThemeModeChanged,
+              onThemeModeChanged: _onThemeModeChangedFromSettings,
               onLockToggle: _onLockToggleFromSettings,
               onOpenDifficulty: _openDifficultyPicker,
               onPrivacyPolicy: _onPrivacyPolicy,
@@ -2000,6 +2157,11 @@ enum _RewardedAdResult {
   dismissedBeforeReward,
   unavailable,
   failedToShow,
+}
+
+enum _RewardedPuzzleAction {
+  hint,
+  skip,
 }
 
 enum _PuzzleSolvedChoice {
