@@ -20,6 +20,7 @@ dependencies:
   advanced_chess_board:
     path: packages/advanced_chess_board
   google_mobile_ads: ^8.0.0
+  firebase_crashlytics: ^5.2.2
 
 dev_dependencies:
   flutter_test:

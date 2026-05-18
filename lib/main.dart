@@ -14,6 +14,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'firebase_options.dart';
 import 'services/analytics_service.dart';
+import 'services/crashlytics_service.dart';
 import 'services/lock_state_controller.dart';
 import 'services/puzzle_queue_service.dart';
 import 'services/stats_repository.dart';
@@ -24,6 +25,9 @@ Future<void> main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+  AppCrashlytics.initializeErrorHandling();
+  AppCrashlytics.logAppOpened();
+  AppCrashlytics.runDebugCrashTestIfRequested();
   await _initializeMobileAds();
   runApp(const MyApp());
 }
@@ -636,10 +640,18 @@ class _ChessLockShellState extends State<ChessLockShell>
     if (next != null) {
       _loadPuzzle(next, isNewPuzzle: true);
       if (isExtraPuzzle) {
+        AppCrashlytics.logPuzzleStarted(
+          puzzleType: "practice_puzzle",
+          difficulty: diff,
+        );
         AppAnalytics.practicePuzzleStarted(
           difficulty: diff,
         );
       } else {
+        AppCrashlytics.logPuzzleStarted(
+          puzzleType: "locked_app_puzzle",
+          difficulty: diff,
+        );
         AppAnalytics.lockedAppPuzzleStarted(
           difficulty: diff,
         );
@@ -1171,10 +1183,18 @@ class _ChessLockShellState extends State<ChessLockShell>
     _unlockAvailable = true;
     if (!wasSolved) {
       if (_extraPuzzleMode) {
+        AppCrashlytics.logPuzzleSolved(
+          puzzleType: "practice_puzzle",
+          difficulty: _difficulty,
+        );
         AppAnalytics.practicePuzzleSolved(
           difficulty: _difficulty,
         );
       } else {
+        AppCrashlytics.logPuzzleSolved(
+          puzzleType: "locked_app_puzzle",
+          difficulty: _difficulty,
+        );
         AppAnalytics.lockedAppPuzzleSolved(
           difficulty: _difficulty,
         );

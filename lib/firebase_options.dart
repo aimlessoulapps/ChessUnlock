@@ -59,4 +59,5 @@ class DefaultFirebaseOptions {
     projectId: 'chessunlock-655a7',
     storageBucket: 'chessunlock-655a7.firebasestorage.app',
   );
+
 }

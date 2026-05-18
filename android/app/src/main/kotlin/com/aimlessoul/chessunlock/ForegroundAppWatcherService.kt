@@ -338,6 +338,7 @@ class ForegroundAppWatcherService : Service() {
         overlaySubtitle = subtitle
         overlayBlockedPkg = blockedPkg
         overlayShown = true
+        CrashlyticsLogger.overlayShown()
         AnalyticsLogger.overlayShown(this)
     }
 
