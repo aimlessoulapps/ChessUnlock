@@ -28,6 +28,7 @@ class ArrowPainter extends CustomPainter {
       final dx = destX - sourceX;
       final dy = destY - sourceY;
       final distance = sqrt(dx * dx + dy * dy);
+      if (distance == 0) continue;
 
       // Define lengths for offsets and arrowhead sides
       final sourceThreshold = blockSize * 0.35;
@@ -87,14 +88,17 @@ class ArrowPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(ArrowPainter oldDelegate) {
+    if (boardOrientation != oldDelegate.boardOrientation) {
+      return true;
+    }
     if (arrows.length != oldDelegate.arrows.length) {
-      return false;
+      return true;
     }
     for (var i = 0; i < arrows.length; i++) {
       if (arrows[i] != oldDelegate.arrows[i]) {
-        return false;
+        return true;
       }
     }
-    return true;
+    return false;
   }
 }

@@ -5,25 +5,10 @@ import 'constants/global_constants.dart';
 import 'models/enums.dart';
 
 class ChessBoardController extends ChangeNotifier {
-  VoidCallback? _listener;
-
   final Chess _game = Chess();
 
-  @override
-  void addListener(VoidCallback listener) {
-    _listener = listener;
-  }
-
-  @override
-  void dispose() {
-    super.dispose();
-    _listener = null;
-  }
-
   void _notifyListeners() {
-    if (_listener != null) {
-      _listener!();
-    }
+    notifyListeners();
   }
 
   void resetBoard({final bool notify = true}) {

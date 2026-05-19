@@ -244,6 +244,11 @@ class AppAnalytics {
         parameters: _screenParameters(_settingsScreen),
       );
 
+  static void feedbackOpened() => _log(
+        "feedback_opened",
+        parameters: _screenParameters(_settingsScreen),
+      );
+
   static void _screenViewed(String eventName, String screenName) {
     _log(eventName, parameters: _screenParameters(screenName));
     unawaited(_logScreenViewSafely(screenName));

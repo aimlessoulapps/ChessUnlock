@@ -43,7 +43,7 @@ class BootReceiver : BroadcastReceiver() {
         }
 
         val retryCount = intent.getIntExtra(EXTRA_RETRY_COUNT, 0)
-        if (action != ACTION_RETRY_START || (!started && retryCount < MAX_RETRY_COUNT)) {
+        if (!started && retryCount < MAX_RETRY_COUNT) {
             scheduleStartRetry(context, retryCount + 1)
         }
     }

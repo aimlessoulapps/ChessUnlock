@@ -14,6 +14,7 @@ object PrefBridge {
     private const val K_UNLOCK_UNTIL_MS = "unlockUntilMs"
     private const val K_INDEF_UNLOCK = "indefUnlock"
     private const val K_LOCK_ENABLED = "lockEnabled"
+    private const val K_OPEN_PUZZLE_REQUESTED = "openPuzzleRequested"
 
     private fun prefs(ctx: Context): SharedPreferences {
         return ctx.getSharedPreferences(FLUTTER_PREFS, Context.MODE_PRIVATE)
@@ -50,6 +51,23 @@ object PrefBridge {
             .putBoolean(K_INDEF_UNLOCK, indefUnlock)
             .putLong(K_UNLOCK_UNTIL_MS, unlockUntilMs)
             .apply()
+    }
+
+    fun requestOpenPuzzle(ctx: Context) {
+        watcherPrefs(ctx).edit()
+            .putBoolean(K_OPEN_PUZZLE_REQUESTED, true)
+            .apply()
+    }
+
+    fun consumeOpenPuzzleRequest(ctx: Context): Boolean {
+        val prefs = watcherPrefs(ctx)
+        val requested = prefs.getBoolean(K_OPEN_PUZZLE_REQUESTED, false)
+        if (requested) {
+            prefs.edit()
+                .putBoolean(K_OPEN_PUZZLE_REQUESTED, false)
+                .apply()
+        }
+        return requested
     }
 
     private fun hasWatcherState(ctx: Context): Boolean {

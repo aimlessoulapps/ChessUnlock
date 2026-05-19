@@ -29,7 +29,8 @@ Future<void> main() async {
   AppCrashlytics.logAppOpened();
   AppCrashlytics.runDebugCrashTestIfRequested();
   await _initializeMobileAds();
-  runApp(const MyApp());
+  final openPuzzleOnStart = await _consumeOpenPuzzleRequest();
+  runApp(MyApp(initialTab: openPuzzleOnStart ? 1 : 0));
 }
 
 Future<void> _initializeMobileAds() async {
@@ -40,8 +41,10 @@ Future<void> _initializeMobileAds() async {
   }
 
   try {
-    await MobileAds.instance.initialize();
-  } catch (_) {
+    final status = await MobileAds.instance.initialize();
+    debugPrint("[ads][init] Mobile Ads initialized: $status");
+  } catch (error) {
+    debugPrint("[ads][init] Mobile Ads initialization failed: $error");
     // Ads are optional; app startup should never depend on ad initialization.
   }
 }
@@ -49,8 +52,22 @@ Future<void> _initializeMobileAds() async {
 // Android native channel
 const MethodChannel _platform = MethodChannel("chesslock/system");
 
+Future<bool> _consumeOpenPuzzleRequest() async {
+  try {
+    return await _platform.invokeMethod<bool>("consumeOpenPuzzleRequest") ??
+        false;
+  } catch (_) {
+    return false;
+  }
+}
+
 class MyApp extends StatefulWidget {
-  const MyApp({super.key});
+  final int initialTab;
+
+  const MyApp({
+    super.key,
+    this.initialTab = 0,
+  });
 
   @override
   State<MyApp> createState() => _MyAppState();
@@ -134,6 +151,7 @@ class _MyAppState extends State<MyApp> {
       themeMode: _themeMode,
       home: _loaded
           ? ChessLockShell(
+              initialTab: widget.initialTab,
               themeMode: _mode,
               onThemeModeChanged: _setTheme,
             )
@@ -174,11 +192,13 @@ TextTheme _safeScaleTextTheme(TextTheme t, double factor) {
 /// UI widgets live in ui.dart
 ///
 class ChessLockShell extends StatefulWidget {
+  final int initialTab;
   final AppThemeMode themeMode;
   final Future<void> Function(AppThemeMode mode) onThemeModeChanged;
 
   const ChessLockShell({
     super.key,
+    this.initialTab = 0,
     required this.themeMode,
     required this.onThemeModeChanged,
   });
@@ -259,7 +279,6 @@ class _ChessLockShellState extends State<ChessLockShell>
   static const _kDifficulty = "puzzleDifficulty";
   static const _kOnboardingComplete = "onboardingComplete";
 
-  bool _usageAccessGranted = false; // backend only
   bool _onboardingDialogQueued = false;
 
   int _statSolved = 0;
@@ -272,14 +291,26 @@ class _ChessLockShellState extends State<ChessLockShell>
   // =========================
   // Hint + Skip ads
   // =========================
-  static const String _rewardedAdUnitId =
+  static const String _testRewardedAdUnitId =
       "ca-app-pub-3940256099942544/5224354917";
+  static const String _productionRewardedAdUnitId =
+      "ca-app-pub-8108010703558411/1847579539";
+  static const String _configuredRewardedAdUnitId = String.fromEnvironment(
+    "CHESSUNLOCK_REWARDED_AD_UNIT_ID",
+  );
+  static const Duration _rewardedInitialRetryDelay = Duration(seconds: 30);
+  static const Duration _rewardedMaxRetryDelay = Duration(minutes: 5);
 
   RewardedAd? _rewardedAd;
   Future<RewardedAd?>? _rewardedAdLoadFuture;
   LoadAdError? _lastRewardedAdLoadError;
+  DateTime? _nextRewardedRetryAt;
+  Duration _rewardedRetryDelay = _rewardedInitialRetryDelay;
+  Timer? _rewardedRetryTimer;
   bool _rewardedAdShowing = false;
   bool _rewardedActionInProgress = false;
+  bool _rewardedDialogShowing = false;
+  bool _loggedInvalidRewardedAdUnitId = false;
 
   // Blink hint overlay
   String? _hintFromSquare;
@@ -287,7 +318,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   Timer? _hintBlinkTimer;
 
   // Tabs
-  int _tab = 0; // 0 Home, 1 Puzzle, 2 Settings
+  late int _tab; // 0 Home, 1 Puzzle, 2 Settings
 
   // Icons cache
   Map<String, Uint8List> _iconsByPkg = {};
@@ -301,7 +332,8 @@ class _ChessLockShellState extends State<ChessLockShell>
   @override
   void initState() {
     super.initState();
-    AppAnalytics.homeScreenViewed();
+    _tab = widget.initialTab.clamp(0, 2).toInt();
+    _logScreenViewedForTab(_tab);
     _lockState = LockStateController(_prefsFuture);
     _statsRepository = StatsRepository(_prefsFuture);
     _puzzleQueue = PuzzleQueueService(
@@ -331,6 +363,7 @@ class _ChessLockShellState extends State<ChessLockShell>
     await _loadQueuesFromPrefs(); // ✅ load stored queues
     await _prefetchIcons();
     await _ensureUsageAccessIfNeeded();
+    await _openPuzzleFromOverlayRequestIfNeeded();
     await _maybeShowFirstLaunchOnboarding();
 
     // ✅ Show a puzzle instantly if queue has one, otherwise cached, otherwise network.
@@ -345,6 +378,7 @@ class _ChessLockShellState extends State<ChessLockShell>
     _checkTimeout?.cancel();
     _hintBlinkTimer?.cancel();
     _disposeRewardedAd();
+    _cancelRewardedRetryTimer();
     _boardController.removeListener(_onBoardChanged);
     _boardController.dispose();
     super.dispose();
@@ -353,8 +387,8 @@ class _ChessLockShellState extends State<ChessLockShell>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      // ignore: discarded_futures
-      _ensureUsageAccessIfNeeded();
+      unawaited(_ensureUsageAccessIfNeeded());
+      unawaited(_openPuzzleFromOverlayRequestIfNeeded());
     }
   }
 
@@ -366,6 +400,12 @@ class _ChessLockShellState extends State<ChessLockShell>
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
     );
+  }
+
+  Future<void> _openPuzzleFromOverlayRequestIfNeeded() async {
+    final openPuzzle = await _consumeOpenPuzzleRequest();
+    if (!mounted || !openPuzzle) return;
+    _goPuzzle();
   }
 
   Future<void> _maybeShowFirstLaunchOnboarding() async {
@@ -767,14 +807,11 @@ class _ChessLockShellState extends State<ChessLockShell>
     await _syncWatcherStateToNative();
 
     if (_lockedPackages.isEmpty) {
-      final granted = await _checkUsageAccess();
-      if (mounted) setState(() => _usageAccessGranted = granted);
       await _stopWatcher();
       return;
     }
 
     final usageGranted = await _checkUsageAccess();
-    if (mounted) setState(() => _usageAccessGranted = usageGranted);
     if (!mounted) return;
 
     if (!usageGranted) {
@@ -808,6 +845,7 @@ class _ChessLockShellState extends State<ChessLockShell>
 
     if (_lockEnabled) {
       final overlayGranted = await _checkOverlayPermission();
+      if (!mounted) return;
       if (!overlayGranted) {
         await showDialog<void>(
           context: context,
@@ -1280,7 +1318,23 @@ class _ChessLockShellState extends State<ChessLockShell>
   // =========================
   // Hint/Skip ads
   // =========================
-  bool get _adsSupported =>
+  String get _rewardedAdUnitId {
+    final configured = _configuredRewardedAdUnitId.trim();
+    if (configured.isNotEmpty) {
+      return configured;
+    }
+    if (kReleaseMode) {
+      return _productionRewardedAdUnitId;
+    }
+    return _testRewardedAdUnitId;
+  }
+
+  bool get _hasUsableRewardedAdUnitId => _isValidAdUnitId(_rewardedAdUnitId);
+
+  bool _isValidAdUnitId(String value) =>
+      value.startsWith("ca-app-pub-") && value.contains("/");
+
+  bool get _rewardedPlatformSupported =>
       !kIsWeb &&
       (defaultTargetPlatform == TargetPlatform.android ||
           defaultTargetPlatform == TargetPlatform.iOS);
@@ -1291,6 +1345,7 @@ class _ChessLockShellState extends State<ChessLockShell>
       !_loadingPuzzle &&
       !_isChecking &&
       !_rewardedActionInProgress &&
+      !_rewardedDialogShowing &&
       !_rewardedAdShowing;
 
   bool get _hintAvailable => _rewardedPuzzleActionAvailable;
@@ -1329,102 +1384,114 @@ class _ChessLockShellState extends State<ChessLockShell>
     required String message,
     required VoidCallback onRewardEarned,
   }) async {
+    if (_rewardedDialogShowing) return;
+    _rewardedDialogShowing = true;
+    if (mounted) setState(() {});
+
     var watchBusy = false;
     String? errorText;
 
-    _logRewardedDialogShown(action);
-    final confirmed = await showDialog<bool>(
-          context: context,
-          builder: (ctx) => StatefulBuilder(
-            builder: (ctx, setDialogState) => AlertDialog(
-              title: Text(title),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(message),
-                  if (errorText != null) ...[
-                    const SizedBox(height: 12),
-                    Text(
-                      errorText!,
-                      style: TextStyle(
-                        color: Theme.of(ctx).colorScheme.error,
+    try {
+      _logRewardedDialogShown(action);
+      final confirmed = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => StatefulBuilder(
+              builder: (ctx, setDialogState) => AlertDialog(
+                title: Text(title),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(message),
+                    if (errorText != null) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        errorText!,
+                        style: TextStyle(
+                          color: Theme.of(ctx).colorScheme.error,
+                        ),
                       ),
-                    ),
+                    ],
                   ],
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () {
+                      _logRewardedDialogCancelTapped(action);
+                      Navigator.pop(ctx, false);
+                    },
+                    child: const Text("Cancel"),
+                  ),
+                  FilledButton(
+                    onPressed: watchBusy
+                        ? null
+                        : () async {
+                            _logRewardedDialogWatchAdTapped(action);
+                            setDialogState(() {
+                              watchBusy = true;
+                              errorText = null;
+                            });
+
+                            final ready = await _prepareRewardedAdForWatch();
+                            if (!mounted || !ctx.mounted) return;
+
+                            if (!ready) {
+                              _logRewardedAdFailed(
+                                action,
+                                adResult: "not_available",
+                              );
+                              setDialogState(() {
+                                watchBusy = false;
+                                errorText = _rewardedAdUnavailableMessage(
+                                  _lastRewardedAdLoadError,
+                                );
+                              });
+                              return;
+                            }
+
+                            Navigator.pop(ctx, true);
+                          },
+                    child: watchBusy
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text("Watch"),
+                  ),
                 ],
               ),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    _logRewardedDialogCancelTapped(action);
-                    Navigator.pop(ctx, false);
-                  },
-                  child: const Text("Cancel"),
-                ),
-                FilledButton(
-                  onPressed: watchBusy
-                      ? null
-                      : () async {
-                          _logRewardedDialogWatchAdTapped(action);
-                          setDialogState(() {
-                            watchBusy = true;
-                            errorText = null;
-                          });
-
-                          final ready = await _prepareRewardedAdForWatch();
-                          if (!mounted || !ctx.mounted) return;
-
-                          if (!ready) {
-                            _logRewardedAdFailed(
-                              action,
-                              adResult: "not_available",
-                            );
-                            setDialogState(() {
-                              watchBusy = false;
-                              errorText = _rewardedAdUnavailableMessage(
-                                _lastRewardedAdLoadError,
-                              );
-                            });
-                            return;
-                          }
-
-                          Navigator.pop(ctx, true);
-                        },
-                  child: watchBusy
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text("Watch"),
-                ),
-              ],
             ),
-          ),
-        ) ??
-        false;
+          ) ??
+          false;
 
-    if (!confirmed || !mounted) return;
+      if (!confirmed || !mounted) return;
 
-    setState(() => _rewardedActionInProgress = true);
-    final result = await _showRewardedAd(onRewardEarned: onRewardEarned);
-    if (!mounted) return;
-    setState(() => _rewardedActionInProgress = false);
+      setState(() => _rewardedActionInProgress = true);
+      final result = await _showRewardedAd(
+        action: action,
+        onRewardEarned: onRewardEarned,
+      );
+      if (!mounted) return;
+      setState(() => _rewardedActionInProgress = false);
 
-    switch (result) {
-      case _RewardedAdResult.completed:
-      case _RewardedAdResult.dismissedAfterReward:
-        return;
-      case _RewardedAdResult.dismissedBeforeReward:
-        _logRewardedAdFailed(action, adResult: "cancelled");
-        return;
-      case _RewardedAdResult.unavailable:
-        _logRewardedAdFailed(action, adResult: "not_available");
-        _snack(_rewardedAdUnavailableMessage(_lastRewardedAdLoadError));
-      case _RewardedAdResult.failedToShow:
-        _logRewardedAdFailed(action, adResult: "failed");
-        _snack("Ad not available right now. Please try again.");
+      switch (result) {
+        case _RewardedAdResult.completed:
+        case _RewardedAdResult.dismissedAfterReward:
+          return;
+        case _RewardedAdResult.dismissedBeforeReward:
+          _logRewardedAdFailed(action, adResult: "cancelled");
+          return;
+        case _RewardedAdResult.unavailable:
+          _logRewardedAdFailed(action, adResult: "not_available");
+          _snack(_rewardedAdUnavailableMessage(_lastRewardedAdLoadError));
+        case _RewardedAdResult.failedToShow:
+          _logRewardedAdFailed(action, adResult: "failed");
+          _snack(_rewardedAdUnavailableMessage(_lastRewardedAdLoadError));
+      }
+    } finally {
+      _rewardedDialogShowing = false;
+      if (mounted) setState(() {});
     }
   }
 
@@ -1487,41 +1554,107 @@ class _ChessLockShellState extends State<ChessLockShell>
   }
 
   Future<bool> _prepareRewardedAdForWatch() async {
-    final ad = _rewardedAd ?? await _loadRewardedAd();
+    final ad = _rewardedAd ?? await _loadRewardedAd(reason: "watch_button");
     return ad != null;
   }
 
-  Future<RewardedAd?> _loadRewardedAd() {
-    if (!_adsSupported) {
+  Future<RewardedAd?> _loadRewardedAd({
+    required String reason,
+    bool ignoreRetryDelay = false,
+  }) {
+    if (!_rewardedPlatformSupported) {
+      _debugRewarded("rewarded load skipped; unsupported platform");
+      _lastRewardedAdLoadError = null;
+      return Future.value(null);
+    }
+
+    if (!_hasUsableRewardedAdUnitId) {
+      _debugInvalidRewardedAdUnitId();
       _lastRewardedAdLoadError = null;
       return Future.value(null);
     }
 
     final cachedAd = _rewardedAd;
-    if (cachedAd != null) return Future.value(cachedAd);
+    if (cachedAd != null) {
+      _debugRewarded(
+        "rewarded load skipped; ad already loaded "
+        "reason=$reason adUnitId=$_rewardedAdUnitId",
+      );
+      return Future.value(cachedAd);
+    }
 
     final inFlight = _rewardedAdLoadFuture;
-    if (inFlight != null) return inFlight;
+    if (inFlight != null) {
+      _debugRewarded(
+        "rewarded load skipped; request already in flight "
+        "reason=$reason adUnitId=$_rewardedAdUnitId",
+      );
+      return inFlight;
+    }
+
+    final nextRetryAt = _nextRewardedRetryAt;
+    if (!ignoreRetryDelay && nextRetryAt != null) {
+      final remaining = nextRetryAt.difference(DateTime.now());
+      if (remaining > Duration.zero) {
+        _scheduleRewardedRetry(remaining, reason: "retry_wait:$reason");
+        _debugRewarded(
+          "rewarded load skipped; retry backoff active for "
+          "${remaining.inSeconds}s adUnitId=$_rewardedAdUnitId",
+        );
+        return Future.value(null);
+      }
+    }
 
     final completer = Completer<RewardedAd?>();
     _rewardedAdLoadFuture = completer.future;
+    _cancelRewardedRetryTimer();
+    _nextRewardedRetryAt = null;
+
+    _debugRewarded(
+      "rewarded load started; reason=$reason adUnitId=$_rewardedAdUnitId",
+    );
 
     RewardedAd.load(
       adUnitId: _rewardedAdUnitId,
       request: const AdRequest(),
       rewardedAdLoadCallback: RewardedAdLoadCallback(
         onAdLoaded: (ad) {
+          if (!mounted) {
+            _rewardedAdLoadFuture = null;
+            ad.dispose();
+            if (!completer.isCompleted) completer.complete(null);
+            return;
+          }
           _rewardedAd = ad;
           _lastRewardedAdLoadError = null;
           _rewardedAdLoadFuture = null;
+          _nextRewardedRetryAt = null;
+          _rewardedRetryDelay = _rewardedInitialRetryDelay;
+          _debugRewarded(
+            "rewarded loaded; adUnitId=$_rewardedAdUnitId "
+            "responseInfo=${ad.responseInfo}",
+          );
           if (!completer.isCompleted) completer.complete(ad);
           if (mounted) setState(() {});
         },
         onAdFailedToLoad: (error) {
           _lastRewardedAdLoadError = error;
           _rewardedAdLoadFuture = null;
+          _debugRewardedLoadError("rewarded failed to load", error);
           if (!completer.isCompleted) completer.complete(null);
           if (mounted) setState(() {});
+          final delayBeforeNextAttempt = _rewardedRetryDelay;
+          _nextRewardedRetryAt = DateTime.now().add(delayBeforeNextAttempt);
+          _scheduleRewardedRetry(
+            delayBeforeNextAttempt,
+            reason: "load_failed",
+          );
+          final nextRetrySeconds = _rewardedRetryDelay.inSeconds * 2;
+          final cappedRetrySeconds =
+              nextRetrySeconds > _rewardedMaxRetryDelay.inSeconds
+                  ? _rewardedMaxRetryDelay.inSeconds
+                  : nextRetrySeconds;
+          _rewardedRetryDelay = Duration(seconds: cappedRetrySeconds);
         },
       ),
     );
@@ -1530,14 +1663,33 @@ class _ChessLockShellState extends State<ChessLockShell>
   }
 
   void _preloadRewardedAd() {
-    if (_rewardedAd != null || _rewardedAdLoadFuture != null) return;
-    unawaited(_loadRewardedAd());
+    if (!_rewardedPlatformSupported) return;
+    if (!_hasUsableRewardedAdUnitId) {
+      _debugInvalidRewardedAdUnitId();
+      return;
+    }
+    if (_rewardedAd != null || _rewardedAdLoadFuture != null) {
+      _debugRewarded(
+        "rewarded preload skipped; ad already loaded/loading "
+        "adUnitId=$_rewardedAdUnitId",
+      );
+      return;
+    }
+    if (_rewardedRetryTimer != null) {
+      _debugRewarded(
+        "rewarded preload skipped; retry already scheduled "
+        "adUnitId=$_rewardedAdUnitId",
+      );
+      return;
+    }
+    unawaited(_loadRewardedAd(reason: "preload"));
   }
 
   Future<_RewardedAdResult> _showRewardedAd({
+    required _RewardedPuzzleAction action,
     required VoidCallback onRewardEarned,
   }) async {
-    final ad = _rewardedAd ?? await _loadRewardedAd();
+    final ad = _rewardedAd ?? await _loadRewardedAd(reason: "show");
     if (ad == null) {
       _preloadRewardedAd();
       return _RewardedAdResult.unavailable;
@@ -1565,7 +1717,18 @@ class _ChessLockShellState extends State<ChessLockShell>
     }
 
     ad.fullScreenContentCallback = FullScreenContentCallback(
+      onAdShowedFullScreenContent: (ad) {
+        _debugRewarded(
+          "rewarded showed; action=${_rewardedActionLogName(action)} "
+          "adUnitId=$_rewardedAdUnitId responseInfo=${ad.responseInfo}",
+        );
+      },
       onAdDismissedFullScreenContent: (ad) {
+        _debugRewarded(
+          "rewarded dismissed; action=${_rewardedActionLogName(action)} "
+          "rewardEarned=$rewardEarned adUnitId=$_rewardedAdUnitId "
+          "responseInfo=${ad.responseInfo}",
+        );
         ad.dispose();
         finish(
           rewardEarned
@@ -1574,6 +1737,11 @@ class _ChessLockShellState extends State<ChessLockShell>
         );
       },
       onAdFailedToShowFullScreenContent: (ad, error) {
+        _debugRewardedAdError(
+          "rewarded failed to show; action=${_rewardedActionLogName(action)}",
+          error,
+          responseInfo: ad.responseInfo,
+        );
         ad.dispose();
         finish(_RewardedAdResult.failedToShow);
       },
@@ -1584,13 +1752,23 @@ class _ChessLockShellState extends State<ChessLockShell>
         onUserEarnedReward: (ad, reward) {
           if (rewardEarned) return;
           rewardEarned = true;
+          _debugRewarded(
+            "rewarded earned; action=${_rewardedActionLogName(action)} "
+            "type=${reward.type} amount=${reward.amount} "
+            "adUnitId=$_rewardedAdUnitId responseInfo=${ad.responseInfo}",
+          );
           onRewardEarned();
+          _preloadRewardedAd();
           if (!completer.isCompleted) {
             completer.complete(_RewardedAdResult.completed);
           }
         },
       );
-    } catch (_) {
+    } catch (error) {
+      _debugRewarded(
+        "rewarded show threw; action=${_rewardedActionLogName(action)} "
+        "adUnitId=$_rewardedAdUnitId error=$error",
+      );
       ad.dispose();
       finish(_RewardedAdResult.failedToShow);
     }
@@ -1602,18 +1780,99 @@ class _ChessLockShellState extends State<ChessLockShell>
     _rewardedAd?.dispose();
     _rewardedAd = null;
     _rewardedAdLoadFuture = null;
+    _cancelRewardedRetryTimer();
+    _nextRewardedRetryAt = null;
+  }
+
+  void _scheduleRewardedRetry(Duration delay, {required String reason}) {
+    if (!mounted ||
+        !_rewardedPlatformSupported ||
+        !_hasUsableRewardedAdUnitId ||
+        _rewardedAd != null ||
+        _rewardedAdLoadFuture != null) {
+      _debugRewarded(
+        "rewarded retry skipped; reason=$reason adUnitId=$_rewardedAdUnitId",
+      );
+      return;
+    }
+
+    if (_rewardedRetryTimer != null) {
+      _debugRewarded(
+        "rewarded retry skipped; retry already scheduled "
+        "reason=$reason adUnitId=$_rewardedAdUnitId",
+      );
+      return;
+    }
+
+    _debugRewarded(
+      "rewarded retry scheduled in ${delay.inSeconds}s; "
+      "reason=$reason adUnitId=$_rewardedAdUnitId",
+    );
+    _rewardedRetryTimer = Timer(delay, () {
+      _rewardedRetryTimer = null;
+      if (!mounted) return;
+      unawaited(
+        _loadRewardedAd(
+          reason: "retry_timer",
+          ignoreRetryDelay: true,
+        ),
+      );
+    });
+  }
+
+  void _cancelRewardedRetryTimer() {
+    _rewardedRetryTimer?.cancel();
+    _rewardedRetryTimer = null;
+  }
+
+  void _debugInvalidRewardedAdUnitId() {
+    if (_loggedInvalidRewardedAdUnitId) return;
+    _loggedInvalidRewardedAdUnitId = true;
+    _debugRewarded(
+      "rewarded ad unit id is missing or invalid; use an ad unit id like "
+      "ca-app-pub-.../... and not the app id ca-app-pub-...~...",
+    );
+  }
+
+  String _rewardedActionLogName(_RewardedPuzzleAction action) {
+    switch (action) {
+      case _RewardedPuzzleAction.hint:
+        return "hint";
+      case _RewardedPuzzleAction.skip:
+        return "skip";
+    }
+  }
+
+  void _debugRewarded(String message) {
+    debugPrint("[ads][rewarded] $message");
+  }
+
+  void _debugRewardedLoadError(String prefix, LoadAdError error) {
+    _debugRewarded(
+      "$prefix; adUnitId=$_rewardedAdUnitId "
+      "error.code=${error.code} "
+      "error.domain=${error.domain} "
+      "error.message=${error.message} "
+      "error.responseInfo=${error.responseInfo}",
+    );
+  }
+
+  void _debugRewardedAdError(
+    String prefix,
+    AdError error, {
+    ResponseInfo? responseInfo,
+  }) {
+    _debugRewarded(
+      "$prefix; adUnitId=$_rewardedAdUnitId "
+      "error.code=${error.code} "
+      "error.domain=${error.domain} "
+      "error.message=${error.message} "
+      "error.responseInfo=$responseInfo",
+    );
   }
 
   String _rewardedAdUnavailableMessage(LoadAdError? error) {
-    final text = error?.message.toLowerCase() ?? "";
-    if (text.contains("network") ||
-        text.contains("internet") ||
-        text.contains("offline") ||
-        text.contains("timeout") ||
-        text.contains("dns")) {
-      return "Ad not available right now. Please check your internet and try again.";
-    }
-    return "Ad not available right now. Please try again.";
+    return "Ad is not available right now. Please check your internet and try again.";
   }
 
   void _blinkHintFromSquare(String fromSquare) {
@@ -1668,6 +1927,12 @@ class _ChessLockShellState extends State<ChessLockShell>
     await Future<void>.delayed(Duration.zero);
     if (!mounted) return;
     await _showBreakTimePicker();
+  }
+
+  void _openPracticePuzzleFromHome() {
+    AppAnalytics.solveMorePuzzlesTapped();
+    _extraPuzzleMode = true;
+    _goPuzzle();
   }
 
   Widget _bottomSheetBody(BuildContext ctx, Widget child) {
@@ -2025,6 +2290,7 @@ class _ChessLockShellState extends State<ChessLockShell>
 
   static const String _privacyPolicyUrl =
       "https://aimlessoulapps.github.io/chessunlock-legal/";
+  static const String _feedbackEmail = "aimlessoul.apps@gmail.com";
 
   Future<void> _onPrivacyPolicy() async {
     AppAnalytics.privacyPolicyTapped();
@@ -2043,6 +2309,29 @@ class _ChessLockShellState extends State<ChessLockShell>
     // Later (after Internal/Closed testing upload), we can wire this to Play
     // or use the official in-app review flow.
     _snack("Rating will be available after ChessUnlock is on Google Play.");
+  }
+
+  Future<void> _onFeedback() async {
+    AppAnalytics.feedbackOpened();
+
+    final uri = Uri(
+      scheme: "mailto",
+      path: _feedbackEmail,
+      queryParameters: const {
+        "subject": "ChessUnlock Feedback",
+        "body": "We value your feedback.\n"
+            "Please let us know what we can improve.",
+      },
+    );
+
+    try {
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!ok) {
+        _snack("Couldn't open email app. Please email $_feedbackEmail.");
+      }
+    } catch (_) {
+      _snack("Couldn't open email app. Please email $_feedbackEmail.");
+    }
   }
 
   Future<void> _onThemeModeChangedFromSettings(AppThemeMode mode) async {
@@ -2091,6 +2380,8 @@ class _ChessLockShellState extends State<ChessLockShell>
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final timedUnlockActive =
+        !_lockEnabled && !_indefiniteUnlock && _unlockRemaining > Duration.zero;
 
     return Scaffold(
       backgroundColor: cs.surface,
@@ -2106,6 +2397,7 @@ class _ChessLockShellState extends State<ChessLockShell>
               lockedPackages: _lockedPackages,
               difficulty: _difficulty,
               solved: _canUnlockApps,
+              timedUnlockActive: timedUnlockActive,
               statSolved: _statSolved,
               statBestRating: _statBestRating,
               accuracyPct: _accuracyPct,
@@ -2120,6 +2412,7 @@ class _ChessLockShellState extends State<ChessLockShell>
                 }
                 unawaited(_showBreakTimePicker());
               },
+              onSolveMorePuzzles: _openPracticePuzzleFromHome,
               onOpenDifficulty: () {
                 _goSettings();
                 _snack("Change difficulty in Settings.");
@@ -2158,6 +2451,7 @@ class _ChessLockShellState extends State<ChessLockShell>
               onLockToggle: _onLockToggleFromSettings,
               onOpenDifficulty: _openDifficultyPicker,
               onPrivacyPolicy: _onPrivacyPolicy,
+              onFeedback: _onFeedback,
               onRateApp: _onRateApp,
             ),
           ],

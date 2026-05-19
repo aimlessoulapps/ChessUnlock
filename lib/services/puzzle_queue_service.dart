@@ -55,7 +55,7 @@ class PuzzleQueueService {
             for (final item in arr) {
               if (item is Map) {
                 final p = _puzzleFromMap(
-                  Map<String, dynamic>.from(item as Map<dynamic, dynamic>),
+                  Map<String, dynamic>.from(item),
                 );
                 if (p != null) list.add(p);
               }
@@ -197,7 +197,8 @@ class PuzzleQueueService {
 
   Future<void> _cacheLastPuzzleForDiff(String diff, ChessPuzzle puzzle) async {
     final prefs = await _prefsFuture;
-    await prefs.setString(_lastPuzzleKey(diff), jsonEncode(_puzzleToMap(puzzle)));
+    await prefs.setString(
+        _lastPuzzleKey(diff), jsonEncode(_puzzleToMap(puzzle)));
   }
 
   Future<ChessPuzzle?> _loadLastPuzzleForDiff(String diff) async {
@@ -208,7 +209,7 @@ class PuzzleQueueService {
       final m = jsonDecode(raw);
       if (m is Map) {
         return _puzzleFromMap(
-          Map<String, dynamic>.from(m as Map<dynamic, dynamic>),
+          Map<String, dynamic>.from(m),
         );
       }
       return null;

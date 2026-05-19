@@ -101,7 +101,7 @@ class PremiumNavBar extends StatelessWidget {
     return SafeArea(
       top: false,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+        padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
         child: Container(
           decoration: BoxDecoration(
             color: cs.surfaceContainerHighest.withOpacity(0.72),
@@ -156,7 +156,14 @@ class PremiumNavBar extends StatelessWidget {
 class BannerAdSlot extends StatefulWidget {
   final double height;
   final bool active;
-  const BannerAdSlot({super.key, this.height = 60, this.active = true});
+  final String screenName;
+
+  const BannerAdSlot({
+    super.key,
+    this.height = 60,
+    this.active = true,
+    required this.screenName,
+  });
 
   @override
   State<BannerAdSlot> createState() => _BannerAdSlotState();
@@ -164,25 +171,47 @@ class BannerAdSlot extends StatefulWidget {
 
 class _BannerAdSlotState extends State<BannerAdSlot>
     with WidgetsBindingObserver {
-  static const _bannerAdUnitId = "ca-app-pub-3940256099942544/6300978111";
+  static const _testBannerAdUnitId = "ca-app-pub-3940256099942544/6300978111";
+  static const _productionBannerAdUnitId =
+      "ca-app-pub-8108010703558411/9765598008";
+  static const _configuredBannerAdUnitId = String.fromEnvironment(
+    "CHESSUNLOCK_BANNER_AD_UNIT_ID",
+  );
   static const _initialRetryDelay = Duration(seconds: 30);
   static const _maxRetryDelay = Duration(minutes: 5);
-  static const _refreshCooldown = Duration(minutes: 1);
+  static const _activeCheckInterval = Duration(seconds: 60);
 
   BannerAd? _bannerAd;
   BannerAd? _loadingBannerAd;
   bool _loaded = false;
   bool _loading = false;
   bool _appResumed = true;
-  DateTime? _lastLoadStartedAt;
   DateTime? _nextRetryAt;
   Duration _retryDelay = _initialRetryDelay;
   Timer? _retryTimer;
+  Timer? _activeCheckTimer;
+  bool _loggedInvalidBannerAdUnitId = false;
 
   bool get _adsSupported =>
       !kIsWeb &&
       (defaultTargetPlatform == TargetPlatform.android ||
           defaultTargetPlatform == TargetPlatform.iOS);
+
+  String get _bannerAdUnitId {
+    final configured = _configuredBannerAdUnitId.trim();
+    if (configured.isNotEmpty) {
+      return configured;
+    }
+    if (kReleaseMode) {
+      return _productionBannerAdUnitId;
+    }
+    return _testBannerAdUnitId;
+  }
+
+  bool get _hasUsableBannerAdUnitId => _isValidAdUnitId(_bannerAdUnitId);
+
+  bool _isValidAdUnitId(String value) =>
+      value.startsWith("ca-app-pub-") && value.contains("/");
 
   bool get _hasLoadedBanner => _loaded && _bannerAd != null;
 
@@ -190,22 +219,21 @@ class _BannerAdSlotState extends State<BannerAdSlot>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    if (widget.active) {
-      _ensureBannerAdLoaded();
-    }
+    _syncActiveBannerState(reason: "init");
   }
 
   @override
   void didUpdateWidget(covariant BannerAdSlot oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!widget.active) {
-      _cancelRetryTimer();
+    if (oldWidget.active != widget.active) {
+      _syncActiveBannerState(
+        reason: widget.active ? "screen_visible" : "screen_hidden",
+      );
       return;
     }
-    if (!oldWidget.active) {
-      _ensureBannerAdLoaded(refreshLoadedAd: true);
-    } else if (!_hasLoadedBanner) {
-      _ensureBannerAdLoaded();
+
+    if (widget.active) {
+      _syncActiveBannerState(reason: "widget_update");
     }
   }
 
@@ -213,60 +241,104 @@ class _BannerAdSlotState extends State<BannerAdSlot>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _appResumed = true;
-      if (widget.active) {
-        _ensureBannerAdLoaded(refreshLoadedAd: true);
-      }
+      _debugBanner("app resumed and banner checked");
+      _syncActiveBannerState(reason: "app_resumed");
     } else {
       _appResumed = false;
+      _debugBanner("app paused; banner timers cancelled");
       _cancelRetryTimer();
+      _stopActiveCheckTimer();
     }
   }
 
-  void _ensureBannerAdLoaded({bool refreshLoadedAd = false}) {
-    if (!_adsSupported || !widget.active || !_appResumed || _loading) {
+  void _syncActiveBannerState({required String reason}) {
+    if (!_adsSupported || !widget.active || !_appResumed) {
+      _stopActiveCheckTimer();
+      if (!widget.active || !_appResumed) {
+        _cancelRetryTimer();
+      }
+      return;
+    }
+
+    _startActiveCheckTimer();
+    _ensureBannerAdLoaded(reason: reason);
+  }
+
+  void _ensureBannerAdLoaded({required String reason}) {
+    if (!_adsSupported || !widget.active || !_appResumed) return;
+
+    if (!_hasUsableBannerAdUnitId) {
+      _debugInvalidBannerAdUnitId();
       return;
     }
 
     if (_hasLoadedBanner) {
-      if (refreshLoadedAd && _canRefreshLoadedBanner) {
-        _disposeLoadedBanner(afterFrame: true);
-        if (mounted) setState(() {});
-      } else {
-        return;
-      }
+      _debugBanner(
+        "banner retry skipped because an ad is already loaded; "
+        "reason=$reason adUnitId=$_bannerAdUnitId",
+      );
+      return;
+    }
+
+    if (_loading) {
+      _debugBanner(
+        "banner retry skipped because an ad is already loading; "
+        "reason=$reason adUnitId=$_bannerAdUnitId",
+      );
+      return;
     }
 
     final nextRetryAt = _nextRetryAt;
     if (nextRetryAt != null) {
       final remaining = nextRetryAt.difference(DateTime.now());
       if (remaining > Duration.zero) {
-        _scheduleRetry(remaining);
+        _scheduleRetry(remaining, reason: "retry_wait:$reason");
         return;
       }
     }
 
-    _loadBannerAd();
+    _loadBannerAd(reason: reason);
   }
 
-  bool get _canRefreshLoadedBanner {
-    final lastLoadStartedAt = _lastLoadStartedAt;
-    if (lastLoadStartedAt == null) return true;
-    return DateTime.now().difference(lastLoadStartedAt) >= _refreshCooldown;
+  void _startActiveCheckTimer() {
+    if (_activeCheckTimer != null) return;
+    _activeCheckTimer = Timer.periodic(_activeCheckInterval, (_) {
+      if (!mounted) return;
+      _debugBanner(
+        "banner refresh/check timer tick; adUnitId=$_bannerAdUnitId",
+      );
+      _ensureBannerAdLoaded(reason: "active_check_timer");
+    });
   }
 
-  void _scheduleRetry(Duration delay) {
+  void _stopActiveCheckTimer() {
+    _activeCheckTimer?.cancel();
+    _activeCheckTimer = null;
+  }
+
+  void _scheduleRetry(Duration delay, {required String reason}) {
     if (!_adsSupported ||
         !widget.active ||
         !_appResumed ||
         _hasLoadedBanner ||
         _loading) {
+      _debugBanner(
+        "banner retry skipped because an ad is already loaded/loading "
+        "or screen is inactive; reason=$reason adUnitId=$_bannerAdUnitId",
+      );
       return;
     }
+    if (_retryTimer != null) return;
+
+    _debugBanner(
+      "banner retry scheduled in ${delay.inSeconds}s; "
+      "reason=$reason adUnitId=$_bannerAdUnitId",
+    );
     _retryTimer?.cancel();
     _retryTimer = Timer(delay, () {
       _retryTimer = null;
       if (!mounted) return;
-      _ensureBannerAdLoaded();
+      _ensureBannerAdLoaded(reason: "retry_timer");
     });
   }
 
@@ -275,25 +347,37 @@ class _BannerAdSlotState extends State<BannerAdSlot>
     _retryTimer = null;
   }
 
-  void _loadBannerAd() {
+  void _loadBannerAd({required String reason}) {
     if (!_adsSupported || !_appResumed || _loading || _hasLoadedBanner) return;
+    if (!_hasUsableBannerAdUnitId) {
+      _debugInvalidBannerAdUnitId();
+      return;
+    }
 
     _cancelRetryTimer();
     _loading = true;
-    _lastLoadStartedAt = DateTime.now();
     _nextRetryAt = null;
 
+    _debugBanner(
+      "banner load started; reason=$reason adUnitId=$_bannerAdUnitId",
+    );
     final ad = BannerAd(
       adUnitId: _bannerAdUnitId,
       request: const AdRequest(),
       size: AdSize.banner,
       listener: BannerAdListener(
         onAdLoaded: (ad) {
-          _loadingBannerAd = null;
+          if (_loadingBannerAd == ad) {
+            _loadingBannerAd = null;
+          }
           if (!mounted) {
             ad.dispose();
             return;
           }
+          _debugBanner(
+            "banner loaded; adUnitId=$_bannerAdUnitId "
+            "responseInfo=${ad.responseInfo}",
+          );
           setState(() {
             _bannerAd = ad as BannerAd;
             _loaded = true;
@@ -303,8 +387,11 @@ class _BannerAdSlotState extends State<BannerAdSlot>
           });
         },
         onAdFailedToLoad: (ad, error) {
-          _loadingBannerAd = null;
+          if (_loadingBannerAd == ad) {
+            _loadingBannerAd = null;
+          }
           ad.dispose();
+          _debugBannerLoadError("banner failed", error);
           if (!mounted) return;
           setState(() {
             _bannerAd = null;
@@ -313,7 +400,7 @@ class _BannerAdSlotState extends State<BannerAdSlot>
           });
           final delayBeforeNextAttempt = _retryDelay;
           _nextRetryAt = DateTime.now().add(delayBeforeNextAttempt);
-          _scheduleRetry(delayBeforeNextAttempt);
+          _scheduleRetry(delayBeforeNextAttempt, reason: "load_failed");
           final nextRetrySeconds = _retryDelay.inSeconds * 2;
           final cappedRetrySeconds = nextRetrySeconds > _maxRetryDelay.inSeconds
               ? _maxRetryDelay.inSeconds
@@ -345,9 +432,33 @@ class _BannerAdSlotState extends State<BannerAdSlot>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _cancelRetryTimer();
+    _stopActiveCheckTimer();
     _loadingBannerAd?.dispose();
     _disposeLoadedBanner();
     super.dispose();
+  }
+
+  void _debugInvalidBannerAdUnitId() {
+    if (_loggedInvalidBannerAdUnitId) return;
+    _loggedInvalidBannerAdUnitId = true;
+    _debugBanner(
+      "banner ad unit id is missing or invalid; use an ad unit id like "
+      "ca-app-pub-.../... and not the app id ca-app-pub-...~...",
+    );
+  }
+
+  void _debugBanner(String message) {
+    debugPrint("[ads][banner][${widget.screenName}] $message");
+  }
+
+  void _debugBannerLoadError(String prefix, LoadAdError error) {
+    _debugBanner(
+      "$prefix; adUnitId=$_bannerAdUnitId "
+      "error.code=${error.code} "
+      "error.domain=${error.domain} "
+      "error.message=${error.message} "
+      "error.responseInfo=${error.responseInfo}",
+    );
   }
 
   @override
@@ -381,6 +492,7 @@ class HomeTab extends StatelessWidget {
 
   final String difficulty;
   final bool solved;
+  final bool timedUnlockActive;
 
   final int statSolved;
   final int statBestRating;
@@ -390,6 +502,7 @@ class HomeTab extends StatelessWidget {
 
   final VoidCallback onEditLockedApps;
   final VoidCallback onBreakTime;
+  final VoidCallback onSolveMorePuzzles;
   final VoidCallback onOpenDifficulty;
 
   const HomeTab({
@@ -401,12 +514,14 @@ class HomeTab extends StatelessWidget {
     required this.lockedPackages,
     required this.difficulty,
     required this.solved,
+    required this.timedUnlockActive,
     required this.statSolved,
     required this.statBestRating,
     required this.accuracyPct,
     required this.iconsByPkg,
     required this.onEditLockedApps,
     required this.onBreakTime,
+    required this.onSolveMorePuzzles,
     required this.onOpenDifficulty,
   });
 
@@ -422,6 +537,12 @@ class HomeTab extends StatelessWidget {
         : (indefiniteUnlock
             ? "Turn Lock ON in Settings"
             : "Apps will be locked in: ${formatRemaining(unlockRemaining)}");
+    final primaryAction = timedUnlockActive ? onSolveMorePuzzles : onBreakTime;
+    final primaryActionLabel = timedUnlockActive
+        ? "Solve more puzzles"
+        : solved
+            ? "Choose unlock time"
+            : "Solve puzzle to unlock apps";
 
     final lockedList = lockedPackages.toList()..sort();
 
@@ -442,7 +563,11 @@ class HomeTab extends StatelessWidget {
             child: ListView(
               padding: const EdgeInsets.only(bottom: 8),
               children: [
-                BannerAdSlot(height: 54, active: active),
+                BannerAdSlot(
+                  height: 54,
+                  active: active,
+                  screenName: "home",
+                ),
                 const SizedBox(height: 8),
                 GlassCard(
                   child: Row(
@@ -674,7 +799,7 @@ class HomeTab extends StatelessWidget {
           SizedBox(
             width: double.infinity,
             child: FilledButton(
-              onPressed: onBreakTime,
+              onPressed: primaryAction,
               style: FilledButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 13),
                 shape: RoundedRectangleBorder(
@@ -687,9 +812,7 @@ class HomeTab extends StatelessWidget {
                   const SizedBox(width: 8),
                   Flexible(
                     child: Text(
-                      solved
-                          ? "Choose unlock time"
-                          : "Solve puzzle to unlock apps",
+                      primaryActionLabel,
                       style: const TextStyle(fontWeight: FontWeight.w700),
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -781,7 +904,11 @@ class PuzzleTab extends StatelessWidget {
                 ),
           ),
           const SizedBox(height: 8),
-          BannerAdSlot(height: 54, active: active),
+          BannerAdSlot(
+            height: 54,
+            active: active,
+            screenName: "puzzle",
+          ),
           if (loadError != null)
             Padding(
               padding: const EdgeInsets.only(top: 6),
@@ -1110,6 +1237,7 @@ class SettingsTab extends StatelessWidget {
   final Future<void> Function() onOpenDifficulty;
 
   final Future<void> Function() onPrivacyPolicy;
+  final Future<void> Function() onFeedback;
   final Future<void> Function() onRateApp;
 
   const SettingsTab({
@@ -1124,6 +1252,7 @@ class SettingsTab extends StatelessWidget {
     required this.onLockToggle,
     required this.onOpenDifficulty,
     required this.onPrivacyPolicy,
+    required this.onFeedback,
     required this.onRateApp,
   });
 
@@ -1151,7 +1280,11 @@ class SettingsTab extends StatelessWidget {
                 ),
           ),
           const SizedBox(height: 8),
-          BannerAdSlot(height: 54, active: active),
+          BannerAdSlot(
+            height: 54,
+            active: active,
+            screenName: "settings",
+          ),
           const SizedBox(height: 8),
 
           Expanded(
@@ -1324,6 +1457,17 @@ class SettingsTab extends StatelessWidget {
                         trailing: Icon(Icons.chevron_right_rounded,
                             color: cs.onSurfaceVariant),
                         onTap: onPrivacyPolicy,
+                      ),
+                      Divider(
+                          height: 8,
+                          color: cs.outlineVariant.withValues(alpha: 0.35)),
+                      SettingsRow(
+                        icon: Icons.feedback_rounded,
+                        title: "Feedback",
+                        subtitle: "Send feedback by email",
+                        trailing: Icon(Icons.chevron_right_rounded,
+                            color: cs.onSurfaceVariant),
+                        onTap: onFeedback,
                       ),
                       Divider(
                           height: 8,

@@ -52,6 +52,10 @@ class MainActivity : FlutterActivity() {
                     result.success(packageName)
                 }
 
+                "consumeOpenPuzzleRequest" -> {
+                    result.success(PrefBridge.consumeOpenPuzzleRequest(applicationContext))
+                }
+
                 "syncWatcherState" -> {
                     syncWatcherState(call.arguments)
                     result.success(null)

@@ -294,6 +294,7 @@ class ForegroundAppWatcherService : Service() {
             suppressOverlayUntilMs = System.currentTimeMillis() + SELF_OPEN_SUPPRESS_MS
             lastPkg = packageName
             hideOverlay()
+            PrefBridge.requestOpenPuzzle(this)
             val i = Intent(this, MainActivity::class.java)
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             startActivity(i)
