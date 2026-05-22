@@ -219,7 +219,10 @@ class _BannerAdSlotState extends State<BannerAdSlot>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _syncActiveBannerState(reason: "init");
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _syncActiveBannerState(reason: "init");
+    });
   }
 
   @override

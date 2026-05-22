@@ -37,6 +37,8 @@ class PuzzleQueueService {
   final Map<String, List<ChessPuzzle>> _queueByDiff;
   final Map<String, LinkedHashSet<String>> _seenIdsByDiff;
   final Set<String> _refillingDiffs = <String>{};
+  final Map<String, Future<void>> _queuedDeliveryPersistenceByDiff =
+      <String, Future<void>>{};
 
   String _queueKey(String diff) => "queue.$diff";
   String _seenKey(String diff) => "seen.$diff";
@@ -78,9 +80,7 @@ class PuzzleQueueService {
     final q = _queueByDiff[diff] ??= <ChessPuzzle>[];
     if (q.isNotEmpty) {
       final next = q.removeAt(0);
-      await _persistQueue(diff);
-      await _cacheLastPuzzleForDiff(diff, next);
-      _maybeKickRefill(diff);
+      _persistQueuedDelivery(diff, next);
       return next;
     }
 
@@ -100,6 +100,25 @@ class PuzzleQueueService {
     }
 
     return null;
+  }
+
+  void _persistQueuedDelivery(String diff, ChessPuzzle puzzle) {
+    final previous =
+        _queuedDeliveryPersistenceByDiff[diff] ?? Future<void>.value();
+    late final Future<void> write;
+    write = previous.catchError((_) {}).then((_) async {
+      await _persistQueue(diff);
+      await _cacheLastPuzzleForDiff(diff, puzzle);
+    }).whenComplete(() {
+      if (identical(_queuedDeliveryPersistenceByDiff[diff], write)) {
+        _queuedDeliveryPersistenceByDiff.remove(diff);
+      }
+    });
+
+    _queuedDeliveryPersistenceByDiff[diff] = write;
+    unawaited(
+      write.whenComplete(() => _maybeKickRefill(diff)).catchError((_) {}),
+    );
   }
 
   void _maybeKickRefill(String diff) {

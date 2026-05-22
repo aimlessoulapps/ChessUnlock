@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:firebase_core/firebase_core.dart';
@@ -28,9 +29,11 @@ Future<void> main() async {
   AppCrashlytics.initializeErrorHandling();
   AppCrashlytics.logAppOpened();
   AppCrashlytics.runDebugCrashTestIfRequested();
-  await _initializeMobileAds();
   final openPuzzleOnStart = await _consumeOpenPuzzleRequest();
   runApp(MyApp(initialTab: openPuzzleOnStart ? 1 : 0));
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(_initializeMobileAds());
+  });
 }
 
 Future<void> _initializeMobileAds() async {
@@ -78,7 +81,6 @@ class _MyAppState extends State<MyApp> {
   late final Future<SharedPreferences> _prefsFuture =
       SharedPreferences.getInstance();
   AppThemeMode _mode = AppThemeMode.system;
-  bool _loaded = false;
 
   @override
   void initState() {
@@ -89,13 +91,15 @@ class _MyAppState extends State<MyApp> {
   Future<void> _loadTheme() async {
     final prefs = await _prefsFuture;
     final raw = (prefs.getString(_kThemeMode) ?? "system").toLowerCase();
-    _mode = switch (raw) {
+    final mode = switch (raw) {
       "dark" => AppThemeMode.dark,
       "light" => AppThemeMode.light,
       _ => AppThemeMode.system,
     };
     if (!mounted) return;
-    setState(() => _loaded = true);
+    if (mode != _mode) {
+      setState(() => _mode = mode);
+    }
   }
 
   Future<void> _setTheme(AppThemeMode mode) async {
@@ -149,13 +153,11 @@ class _MyAppState extends State<MyApp> {
       theme: polish(baseLight),
       darkTheme: polish(baseDark),
       themeMode: _themeMode,
-      home: _loaded
-          ? ChessLockShell(
-              initialTab: widget.initialTab,
-              themeMode: _mode,
-              onThemeModeChanged: _setTheme,
-            )
-          : const SizedBox.shrink(),
+      home: ChessLockShell(
+        initialTab: widget.initialTab,
+        themeMode: _mode,
+        onThemeModeChanged: _setTheme,
+      ),
     );
   }
 }
@@ -279,6 +281,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   // Shared prefs keys
   static const _kDifficulty = "puzzleDifficulty";
   static const _kOnboardingComplete = "onboardingComplete";
+  static const _kLockedAppIconCache = "lockedAppIconCache.v1";
 
   bool _onboardingDialogQueued = false;
 
@@ -323,6 +326,10 @@ class _ChessLockShellState extends State<ChessLockShell>
 
   // Icons cache
   Map<String, Uint8List> _iconsByPkg = {};
+  Map<String, String> _iconBase64ByPkg = {};
+  Future<void>? _lockedIconCacheLoadFuture;
+  bool _lockedIconPrefetchScheduled = false;
+  bool _lockedIconPrefetchInFlight = false;
 
   // =========================
   // ✅ NEW: local queues per difficulty
@@ -346,7 +353,10 @@ class _ChessLockShellState extends State<ChessLockShell>
     _boardController.addListener(_onBoardChanged);
 
     _init();
-    _preloadRewardedAd();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _preloadRewardedAd();
+    });
 
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
@@ -362,13 +372,20 @@ class _ChessLockShellState extends State<ChessLockShell>
     if (!mounted) return;
 
     await _loadQueuesFromPrefs(); // ✅ load stored queues
-    await _prefetchIcons();
+    if (!mounted) return;
+
+    final puzzleLoad = _showNextPuzzleForCurrentDifficulty(
+      reason: "init",
+    ).catchError((Object error, StackTrace stackTrace) {
+      if (mounted) _snack("Puzzle load failed.");
+    });
     await _ensureUsageAccessIfNeeded();
     await _openPuzzleFromOverlayRequestIfNeeded();
     await _maybeShowFirstLaunchOnboarding();
 
     // ✅ Show a puzzle instantly if queue has one, otherwise cached, otherwise network.
-    await _showNextPuzzleForCurrentDifficulty(reason: "init");
+    await puzzleLoad;
+    _scheduleDeferredLockedIconPrefetch();
   }
 
   @override
@@ -557,6 +574,26 @@ class _ChessLockShellState extends State<ChessLockShell>
     }).toList();
   }
 
+  Future<List<Map<String, dynamic>>> _getLockedAppIconsRaw(
+    Set<String> packages,
+  ) async {
+    final ownPackageName = await _getOwnPackageName();
+    final sanitized = _withoutOwnPackage(packages, ownPackageName).toList()
+      ..sort();
+    if (sanitized.isEmpty) return <Map<String, dynamic>>[];
+
+    final raw = await _platform.invokeMethod<List<dynamic>>(
+      "getLaunchableAppIcons",
+      {"packageNames": sanitized},
+    );
+    final list =
+        (raw ?? []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    return list.where((m) {
+      final pkg = (m["packageName"] ?? "").toString();
+      return pkg.isNotEmpty && sanitized.contains(pkg);
+    }).toList();
+  }
+
   Future<String?> _getOwnPackageName() async {
     final cached = _ownPackageName;
     if (cached != null && cached.isNotEmpty) return cached;
@@ -594,24 +631,136 @@ class _ChessLockShellState extends State<ChessLockShell>
     await _saveLockedPackages();
   }
 
-  Future<void> _prefetchIcons() async {
+  void _scheduleDeferredLockedIconPrefetch() {
+    if (_lockedPackages.isEmpty ||
+        _lockedIconPrefetchScheduled ||
+        _lockedIconPrefetchInFlight) {
+      return;
+    }
+
+    _lockedIconPrefetchScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _lockedIconPrefetchScheduled = false;
+      if (!mounted) return;
+      unawaited(_prefetchLockedAppIcons());
+    });
+  }
+
+  Future<void> _prefetchLockedAppIcons() async {
+    if (_lockedIconPrefetchInFlight || _lockedPackages.isEmpty) return;
+    _lockedIconPrefetchInFlight = true;
+
     try {
-      final list = await _getLaunchableAppsRaw();
+      final cacheLoad = _lockedIconCacheLoadFuture;
+      if (cacheLoad != null) {
+        await cacheLoad.catchError((_) {});
+      }
+      if (!mounted) return;
+
+      final lockedPackages = {..._lockedPackages};
+      final missingPackages =
+          lockedPackages.where((pkg) => !_iconsByPkg.containsKey(pkg)).toSet();
+      if (missingPackages.isEmpty) return;
+
+      final list = await _getLockedAppIconsRaw(missingPackages);
       final map = <String, Uint8List>{};
+      final base64ByPkg = <String, String>{};
 
       for (final m in list) {
         final pkg = (m["packageName"] ?? "").toString();
+        if (!missingPackages.contains(pkg)) continue;
         final b64 = (m["iconPngBase64"] ?? "").toString();
         if (pkg.isEmpty || b64.isEmpty) continue;
         final bytes = decodeIconPngBase64(b64);
-        if (bytes != null) map[pkg] = bytes;
+        if (bytes == null) continue;
+        map[pkg] = bytes;
+        base64ByPkg[pkg] = b64;
       }
 
       if (!mounted) return;
-      setState(() => _iconsByPkg = map);
+      if (map.isNotEmpty) {
+        _iconBase64ByPkg = {..._iconBase64ByPkg, ...base64ByPkg};
+        unawaited(_persistLockedAppIconCache(lockedPackages));
+        setState(() => _iconsByPkg = {..._iconsByPkg, ...map});
+      }
     } catch (_) {
       // ignore
+    } finally {
+      _lockedIconPrefetchInFlight = false;
     }
+  }
+
+  void _restoreCachedLockedAppIconsInBackground() {
+    if (_lockedIconCacheLoadFuture != null) return;
+    _lockedIconCacheLoadFuture = _restoreCachedLockedAppIcons();
+    unawaited(_lockedIconCacheLoadFuture!.catchError((_) {}));
+  }
+
+  Future<void> _restoreCachedLockedAppIcons() async {
+    try {
+      final prefs = await _prefsFuture;
+      final raw = prefs.getString(_kLockedAppIconCache);
+      if (raw == null || raw.trim().isEmpty) return;
+
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return;
+
+      final lockedPackages = {..._lockedPackages};
+      if (lockedPackages.isEmpty) return;
+
+      final restoredBase64 = <String, String>{};
+      final restoredIcons = <String, Uint8List>{};
+
+      for (final entry in decoded.entries) {
+        final pkg = entry.key.toString().trim();
+        final b64 = entry.value?.toString().trim() ?? "";
+        if (pkg.isEmpty || b64.isEmpty) continue;
+
+        final bytes = decodeIconPngBase64(b64);
+        if (bytes == null) continue;
+
+        restoredBase64[pkg] = b64;
+        if (lockedPackages.contains(pkg)) {
+          restoredIcons[pkg] = bytes;
+        }
+      }
+
+      if (!mounted) return;
+      _iconBase64ByPkg = restoredBase64;
+      if (restoredIcons.isNotEmpty) {
+        setState(() => _iconsByPkg = {..._iconsByPkg, ...restoredIcons});
+      }
+    } catch (_) {
+      // ignore corrupt or old cache data; initials remain the fallback.
+    }
+  }
+
+  Future<void> _persistLockedAppIconCache(Set<String> lockedPackages) async {
+    try {
+      final cache = <String, String>{
+        for (final entry in _iconBase64ByPkg.entries)
+          if (lockedPackages.contains(entry.key) &&
+              entry.value.trim().isNotEmpty)
+            entry.key: entry.value,
+      };
+
+      final prefs = await _prefsFuture;
+      if (cache.isEmpty) {
+        await prefs.remove(_kLockedAppIconCache);
+      } else {
+        await prefs.setString(_kLockedAppIconCache, jsonEncode(cache));
+      }
+    } catch (_) {
+      // Icon cache is best-effort only.
+    }
+  }
+
+  void _retainLockedAppIcons(Set<String> lockedPackages) {
+    _iconsByPkg = {
+      for (final entry in _iconsByPkg.entries)
+        if (lockedPackages.contains(entry.key)) entry.key: entry.value,
+    };
+    _iconBase64ByPkg.removeWhere((pkg, _) => !lockedPackages.contains(pkg));
   }
 
   // =========================
@@ -620,6 +769,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   Future<void> _loadPrefs() async {
     await _lockState.load();
     await _removeOwnPackageFromLockedAppsIfPresent();
+    _restoreCachedLockedAppIconsInBackground();
     final prefs = await _prefsFuture;
 
     final savedDiff = prefs.getString(_kDifficulty);
@@ -2326,12 +2476,16 @@ class _ChessLockShellState extends State<ChessLockShell>
     final sanitized = await _sanitizeLockedPackages(updated);
     if (!mounted) return;
 
-    setState(() => _lockedPackages = sanitized);
+    setState(() {
+      _lockedPackages = sanitized;
+      _retainLockedAppIcons(sanitized);
+    });
+    unawaited(_persistLockedAppIconCache(sanitized));
     await _saveLockedPackages();
     AppAnalytics.lockedAppsSelectionSaved(sanitized.length);
     await _completeOnboarding();
     await _ensureUsageAccessIfNeeded();
-    await _prefetchIcons();
+    _scheduleDeferredLockedIconPrefetch();
     _snack("Apps locked.");
   }
 

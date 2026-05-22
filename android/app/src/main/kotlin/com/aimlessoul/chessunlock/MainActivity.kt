@@ -80,6 +80,14 @@ class MainActivity : FlutterActivity() {
                     result.success(getLaunchableApps())
                 }
 
+                "getLaunchableAppIcons" -> {
+                    val args = call.arguments as? Map<*, *>
+                    val packageNames = (args?.get("packageNames") as? List<*>)
+                        ?.mapNotNull { it?.toString()?.takeIf { pkg -> pkg.isNotBlank() } }
+                        ?: emptyList()
+                    result.success(getLaunchableAppIcons(packageNames))
+                }
+
                 else -> result.notImplemented()
             }
         }
@@ -210,6 +218,46 @@ class MainActivity : FlutterActivity() {
         }
 
         out.sortBy { (it["appName"] as? String ?: "").lowercase() }
+        return out
+    }
+
+    private fun getLaunchableAppIcons(packageNames: List<String>): List<Map<String, Any>> {
+        val pm = packageManager
+        val out = ArrayList<Map<String, Any>>(packageNames.size)
+
+        for (pkg in packageNames.distinct()) {
+            if (pkg == packageName) continue
+
+            val appInfo = try {
+                @Suppress("DEPRECATION")
+                pm.getApplicationInfo(pkg, 0)
+            } catch (_: Throwable) {
+                continue
+            }
+
+            val label = try {
+                pm.getApplicationLabel(appInfo)?.toString() ?: pkg
+            } catch (_: Throwable) {
+                pkg
+            }
+
+            val iconB64 = try {
+                val d = pm.getApplicationIcon(appInfo)
+                val png = drawableToPngBytes(d)
+                Base64.encodeToString(png, Base64.NO_WRAP)
+            } catch (_: Throwable) {
+                ""
+            }
+
+            out.add(
+                mapOf(
+                    "packageName" to pkg,
+                    "appName" to label,
+                    "iconPngBase64" to iconB64
+                )
+            )
+        }
+
         return out
     }
 

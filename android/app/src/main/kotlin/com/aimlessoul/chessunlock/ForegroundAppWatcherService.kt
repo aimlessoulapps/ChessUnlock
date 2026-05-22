@@ -28,7 +28,8 @@ class ForegroundAppWatcherService : Service() {
         private const val ACTION_HIDE_OVERLAY = "chesslock.action.HIDE_OVERLAY"
         private const val USAGE_EVENT_LOOKBACK_MS = 10_000L
         private const val USAGE_EVENT_OVERLAP_MS = 1000L
-        private const val OVERLAY_CONFIRM_DELAY_MS = 250L
+        private const val FOREGROUND_POLL_ACTIVE_MS = 800L
+        private const val OVERLAY_CONFIRM_DELAY_MS = 100L
         private const val SELF_OPEN_SUPPRESS_MS = 1800L
 
         fun start(ctx: Context) {
@@ -140,7 +141,7 @@ class ForegroundAppWatcherService : Service() {
                     scheduleNext(350)
                 }
             } catch (_: Throwable) {
-                scheduleNext(1200)
+                scheduleNext(FOREGROUND_POLL_ACTIVE_MS)
             }
         }
     }
@@ -188,7 +189,7 @@ class ForegroundAppWatcherService : Service() {
         if (indef) return 3500
 
         val until = PrefBridge.getUnlockUntilMs(this)
-        if (until <= 0L) return 1200
+        if (until <= 0L) return FOREGROUND_POLL_ACTIVE_MS
 
         val now = System.currentTimeMillis()
         val remaining = until - now
