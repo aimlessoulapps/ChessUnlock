@@ -292,7 +292,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   // Hint + Skip ads
   // =========================
   static const String _testRewardedAdUnitId =
-      "ca-app-pub-3940256099942544/5224354917";
+      "ca-app-pub-8108010703558411/1847579539";
   static const String _productionRewardedAdUnitId =
       "ca-app-pub-8108010703558411/1847579539";
   static const String _configuredRewardedAdUnitId = String.fromEnvironment(
@@ -1311,7 +1311,9 @@ class _ChessLockShellState extends State<ChessLockShell>
       setState(() => _extraPuzzleMode = true);
       await _loadExtraPuzzle();
     } else if (choice == _PuzzleSolvedChoice.unlockApps) {
-      await _openUnlockAppsFlow();
+      AppAnalytics.unlockAppsButtonTapped();
+      _extraPuzzleMode = false;
+      _goHome();
     }
   }
 
