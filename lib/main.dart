@@ -242,6 +242,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   bool _extraPuzzleMode = false;
   bool _puzzleSolvedChoiceShown = false;
   bool _puzzleSolvedDialogShowing = false;
+  bool _needsFreshPuzzleOnNextOpen = false;
 
   bool _loadingPuzzle = false;
   String? _loadError;
@@ -927,6 +928,46 @@ class _ChessLockShellState extends State<ChessLockShell>
     );
   }
 
+  void _clearCurrentPuzzleForFreshLoad() {
+    _autoCheckTimer?.cancel();
+    _checkTimeout?.cancel();
+    _clearHintHighlight(notify: false);
+    _checkToken++;
+
+    _puzzle = null;
+    _engine = null;
+    _progressIndex = 0;
+    _solved = false;
+    _isChecking = false;
+    _pendingUserFen = null;
+    _puzzleSolvedChoiceShown = false;
+    _puzzleSolvedDialogShowing = false;
+    _loadError = null;
+
+    _positionFen = startingFen;
+    _setBoardFen(_positionFen);
+  }
+
+  void _prepareFreshPuzzleOnNextOpen() {
+    _needsFreshPuzzleOnNextOpen = true;
+    if (_solved) {
+      _clearCurrentPuzzleForFreshLoad();
+      if (mounted) setState(() {});
+    }
+  }
+
+  void _ensureFreshPuzzleWhenOpeningPuzzleTab() {
+    if (!mounted || _loadingPuzzle || _puzzleSolvedDialogShowing) return;
+    if (!_needsFreshPuzzleOnNextOpen && !_solved) return;
+
+    if (_solved) {
+      _clearCurrentPuzzleForFreshLoad();
+      if (mounted) setState(() {});
+    }
+
+    _queuePuzzleRefresh(_extraPuzzleMode ? "extra" : "freshopen");
+  }
+
   void _resetSolvedUnlockFlow() {
     _unlockAvailable = false;
     _extraPuzzleMode = false;
@@ -1040,6 +1081,9 @@ class _ChessLockShellState extends State<ChessLockShell>
 
     if (isNewPuzzle) {
       _attemptsThisPuzzle = 0;
+      _puzzleSolvedChoiceShown = false;
+      _puzzleSolvedDialogShowing = false;
+      _needsFreshPuzzleOnNextOpen = false;
     }
 
     _preloadRewardedAd();
@@ -1313,6 +1357,7 @@ class _ChessLockShellState extends State<ChessLockShell>
     } else if (choice == _PuzzleSolvedChoice.unlockApps) {
       AppAnalytics.unlockAppsButtonTapped();
       _extraPuzzleMode = false;
+      _prepareFreshPuzzleOnNextOpen();
       _goHome();
     }
   }
@@ -2358,6 +2403,9 @@ class _ChessLockShellState extends State<ChessLockShell>
     setState(() => _tab = index);
     if (index != previousTab) {
       _logScreenViewedForTab(index);
+    }
+    if (index == 1 && previousTab != 1) {
+      _ensureFreshPuzzleWhenOpeningPuzzleTab();
     }
   }
 
