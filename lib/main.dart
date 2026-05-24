@@ -9,11 +9,11 @@ import 'package:chess/chess.dart' as ch;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart' hide Uint8List;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' hide Uint8List;
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'firebase_options.dart';
+import 'services/app_lock/app_lock_service.dart';
 import 'services/analytics_service.dart';
 import 'services/crashlytics_service.dart';
 import 'services/lock_state_controller.dart';
@@ -23,17 +23,33 @@ import 'ui.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
-  AppCrashlytics.initializeErrorHandling();
-  AppCrashlytics.logAppOpened();
-  AppCrashlytics.runDebugCrashTestIfRequested();
-  final openPuzzleOnStart = await _consumeOpenPuzzleRequest();
+  final firebaseReady = await _initializeFirebaseIfConfigured();
+  if (firebaseReady) {
+    AppCrashlytics.initializeErrorHandling();
+    AppCrashlytics.logAppOpened();
+    AppCrashlytics.runDebugCrashTestIfRequested();
+  }
+  final openPuzzleOnStart =
+      await createAppLockService().consumeOpenPuzzleRequest();
   runApp(MyApp(initialTab: openPuzzleOnStart ? 1 : 0));
   WidgetsBinding.instance.addPostFrameCallback((_) {
     unawaited(_initializeMobileAds());
   });
+}
+
+Future<bool> _initializeFirebaseIfConfigured() async {
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    return true;
+  } on UnsupportedError catch (error) {
+    debugPrint("[firebase][init] Firebase not configured: $error");
+    return false;
+  } catch (error) {
+    debugPrint("[firebase][init] Firebase initialization failed: $error");
+    return false;
+  }
 }
 
 Future<void> _initializeMobileAds() async {
@@ -49,18 +65,6 @@ Future<void> _initializeMobileAds() async {
   } catch (error) {
     debugPrint("[ads][init] Mobile Ads initialization failed: $error");
     // Ads are optional; app startup should never depend on ad initialization.
-  }
-}
-
-// Android native channel
-const MethodChannel _platform = MethodChannel("chesslock/system");
-
-Future<bool> _consumeOpenPuzzleRequest() async {
-  try {
-    return await _platform.invokeMethod<bool>("consumeOpenPuzzleRequest") ??
-        false;
-  } catch (_) {
-    return false;
   }
 }
 
@@ -216,7 +220,8 @@ class _ChessLockShellState extends State<ChessLockShell>
   late final LockStateController _lockState;
   late final StatsRepository _statsRepository;
   late final PuzzleQueueService _puzzleQueue;
-  String? _ownPackageName;
+  late final AppLockService _appLock;
+  bool _unsupportedAppLockMessageShown = false;
 
   DateTime? get _unlockedUntil => _lockState.unlockedUntil;
   set _unlockedUntil(DateTime? value) => _lockState.unlockedUntil = value;
@@ -348,6 +353,7 @@ class _ChessLockShellState extends State<ChessLockShell>
       _prefsFuture,
       difficultyOptions: _difficultyOptions,
     );
+    _appLock = createAppLockService();
     WidgetsBinding.instance.addObserver(this);
 
     _boardController.addListener(_onBoardChanged);
@@ -379,7 +385,7 @@ class _ChessLockShellState extends State<ChessLockShell>
     ).catchError((Object error, StackTrace stackTrace) {
       if (mounted) _snack("Puzzle load failed.");
     });
-    await _ensureUsageAccessIfNeeded();
+    await _ensureAppLockReadyIfNeeded();
     await _openPuzzleFromOverlayRequestIfNeeded();
     await _maybeShowFirstLaunchOnboarding();
 
@@ -405,7 +411,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      unawaited(_ensureUsageAccessIfNeeded());
+      unawaited(_ensureAppLockReadyIfNeeded());
       unawaited(_openPuzzleFromOverlayRequestIfNeeded());
     }
   }
@@ -421,7 +427,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   }
 
   Future<void> _openPuzzleFromOverlayRequestIfNeeded() async {
-    final openPuzzle = await _consumeOpenPuzzleRequest();
+    final openPuzzle = await _appLock.consumeOpenPuzzleRequest();
     if (!mounted || !openPuzzle) return;
     _goPuzzle();
   }
@@ -562,65 +568,16 @@ class _ChessLockShellState extends State<ChessLockShell>
   // =========================
   // Launchable apps + icons
   // =========================
-  Future<List<Map<String, dynamic>>> _getLaunchableAppsRaw() async {
-    final ownPackageName = await _getOwnPackageName();
-    final raw =
-        await _platform.invokeMethod<List<dynamic>>("getLaunchableApps");
-    final list =
-        (raw ?? []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
-    return list.where((m) {
-      final pkg = (m["packageName"] ?? "").toString();
-      return pkg.isNotEmpty && pkg != ownPackageName;
-    }).toList();
-  }
+  Future<List<Map<String, dynamic>>> _getLaunchableAppsRaw() =>
+      _appLock.getLockableApps();
 
   Future<List<Map<String, dynamic>>> _getLockedAppIconsRaw(
     Set<String> packages,
-  ) async {
-    final ownPackageName = await _getOwnPackageName();
-    final sanitized = _withoutOwnPackage(packages, ownPackageName).toList()
-      ..sort();
-    if (sanitized.isEmpty) return <Map<String, dynamic>>[];
-
-    final raw = await _platform.invokeMethod<List<dynamic>>(
-      "getLaunchableAppIcons",
-      {"packageNames": sanitized},
-    );
-    final list =
-        (raw ?? []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
-    return list.where((m) {
-      final pkg = (m["packageName"] ?? "").toString();
-      return pkg.isNotEmpty && sanitized.contains(pkg);
-    }).toList();
-  }
-
-  Future<String?> _getOwnPackageName() async {
-    final cached = _ownPackageName;
-    if (cached != null && cached.isNotEmpty) return cached;
-
-    try {
-      final pkg =
-          (await _platform.invokeMethod<String>("getOwnPackageName"))?.trim();
-      if (pkg == null || pkg.isEmpty) return null;
-      _ownPackageName = pkg;
-      return pkg;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  Set<String> _withoutOwnPackage(
-    Set<String> packages,
-    String? ownPackageName,
-  ) {
-    return packages
-        .map((pkg) => pkg.trim())
-        .where((pkg) => pkg.isNotEmpty && pkg != ownPackageName)
-        .toSet();
-  }
+  ) =>
+      _appLock.getLockableAppIcons(packages);
 
   Future<Set<String>> _sanitizeLockedPackages(Set<String> packages) async {
-    return _withoutOwnPackage(packages, await _getOwnPackageName());
+    return _appLock.sanitizeLockedAppIds(packages);
   }
 
   Future<void> _removeOwnPackageFromLockedAppsIfPresent() async {
@@ -872,100 +829,42 @@ class _ChessLockShellState extends State<ChessLockShell>
   }
 
   // =========================
-  // Usage Access + watcher
+  // Platform app locking
   // =========================
-  Future<bool> _checkUsageAccess() async {
-    try {
-      final granted = await _platform.invokeMethod<bool>("hasUsageAccess");
-      return granted == true;
-    } catch (_) {
-      return false;
-    }
+  Future<void> _syncAppLockStateToNative() async {
+    await _appLock.syncLockState(
+      AppLockStateSnapshot(
+        lockedAppIds: await _sanitizeLockedPackages(_lockedPackages),
+        lockEnabled: _lockEnabled,
+        indefiniteUnlock: _indefiniteUnlock,
+        unlockUntilMs: _unlockedUntil?.millisecondsSinceEpoch ?? 0,
+      ),
+    );
   }
 
-  Future<void> _openUsageAccessSettings() async {
-    try {
-      await _platform.invokeMethod("openUsageAccessSettings");
-    } catch (_) {}
-  }
-
-  Future<bool> _checkOverlayPermission() async {
-    try {
-      final ok = await _platform.invokeMethod<bool>("hasOverlayPermission");
-      return ok == true;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  Future<bool> _checkNotificationPermission() async {
-    try {
-      final ok =
-          await _platform.invokeMethod<bool>("hasNotificationPermission");
-      return ok == true;
-    } catch (_) {
-      return true;
-    }
-  }
-
-  Future<void> _requestNotificationPermissionIfNeeded() async {
-    try {
-      final granted = await _checkNotificationPermission();
-      if (!granted) {
-        await _platform.invokeMethod("requestNotificationPermission");
-      }
-    } catch (_) {}
-  }
-
-  Future<void> _syncWatcherStateToNative() async {
-    try {
-      final lockedPackages =
-          (await _sanitizeLockedPackages(_lockedPackages)).toList()..sort();
-      await _platform.invokeMethod("syncWatcherState", {
-        "lockedPackages": lockedPackages,
-        "lockEnabled": _lockEnabled,
-        "indefiniteUnlock": _indefiniteUnlock,
-        "unlockUntilMs": _unlockedUntil?.millisecondsSinceEpoch ?? 0,
-      });
-    } catch (_) {}
-  }
-
-  Future<void> _openOverlaySettings() async {
-    try {
-      await _platform.invokeMethod("openOverlaySettings");
-    } catch (_) {}
-  }
-
-  Future<void> _startWatcher() async {
-    try {
-      await _platform.invokeMethod("startWatcher");
-    } catch (_) {}
-  }
-
-  Future<void> _hideWatcherOverlay() async {
-    try {
-      await _platform.invokeMethod("hideWatcherOverlay");
-    } catch (_) {}
-  }
-
-  Future<void> _stopWatcher() async {
-    try {
-      await _platform.invokeMethod("stopWatcher");
-    } catch (_) {}
-  }
-
-  Future<void> _ensureUsageAccessIfNeeded() async {
-    await _syncWatcherStateToNative();
+  Future<void> _ensureAppLockReadyIfNeeded() async {
+    await _syncAppLockStateToNative();
 
     if (_lockedPackages.isEmpty) {
-      await _stopWatcher();
+      await _appLock.stopEnforcement();
       return;
     }
 
-    final usageGranted = await _checkUsageAccess();
+    if (!_appLock.isSupported) {
+      await _appLock.stopEnforcement();
+      if (!_unsupportedAppLockMessageShown && mounted) {
+        _unsupportedAppLockMessageShown = true;
+        _snack(_appLock.unsupportedMessage);
+      }
+      return;
+    }
+
+    final permissionStatus = await _appLock.checkPermissions(
+      requiresOverlay: _lockEnabled,
+    );
     if (!mounted) return;
 
-    if (!usageGranted) {
+    if (permissionStatus.issue == AppLockPermissionIssue.usageAccessRequired) {
       await showDialog<void>(
         context: context,
         barrierDismissible: false,
@@ -983,48 +882,45 @@ class _ChessLockShellState extends State<ChessLockShell>
             FilledButton(
               onPressed: () async {
                 Navigator.pop(ctx);
-                await _openUsageAccessSettings();
+                await _appLock.openUsageAccessSettings();
               },
               child: const Text("Open Settings"),
             ),
           ],
         ),
       );
-      await _stopWatcher();
+      await _appLock.stopEnforcement();
       return;
     }
 
-    if (_lockEnabled) {
-      final overlayGranted = await _checkOverlayPermission();
-      if (!mounted) return;
-      if (!overlayGranted) {
-        await showDialog<void>(
-          context: context,
-          barrierDismissible: false,
-          builder: (ctx) => AlertDialog(
-            title: const Text("Enable Display Over Other Apps"),
-            content: const Text(
-              "ChessUnlock needs permission to show the lock overlay above other apps.\n\n"
-              "Open Settings → enable “Display over other apps” for ChessUnlock.",
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text("Not now"),
-              ),
-              FilledButton(
-                onPressed: () async {
-                  Navigator.pop(ctx);
-                  await _openOverlaySettings();
-                },
-                child: const Text("Open Settings"),
-              ),
-            ],
+    if (permissionStatus.issue ==
+        AppLockPermissionIssue.overlayPermissionRequired) {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          title: const Text("Enable Display Over Other Apps"),
+          content: const Text(
+            "ChessUnlock needs permission to show the lock overlay above other apps.\n\n"
+            "Open Settings → enable “Display over other apps” for ChessUnlock.",
           ),
-        );
-        await _stopWatcher();
-        return;
-      }
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text("Not now"),
+            ),
+            FilledButton(
+              onPressed: () async {
+                Navigator.pop(ctx);
+                await _appLock.openOverlaySettings();
+              },
+              child: const Text("Open Settings"),
+            ),
+          ],
+        ),
+      );
+      await _appLock.stopEnforcement();
+      return;
     }
 
     final hasTimedUnlock = !_indefiniteUnlock && _unlockedUntil != null;
@@ -1032,16 +928,16 @@ class _ChessLockShellState extends State<ChessLockShell>
         _lockedPackages.isNotEmpty && (_lockEnabled || hasTimedUnlock);
 
     if (shouldRunWatcher) {
-      await _requestNotificationPermissionIfNeeded();
+      await _appLock.requestNotificationPermissionIfNeeded();
       if (!mounted) return;
 
       if (_lockEnabled) {
-        await _startWatcher();
+        await _appLock.startEnforcement();
       } else {
-        await _hideWatcherOverlay();
+        await _appLock.hideActiveBlocker();
       }
     } else {
-      await _stopWatcher();
+      await _appLock.stopEnforcement();
     }
   }
 
@@ -1057,7 +953,7 @@ class _ChessLockShellState extends State<ChessLockShell>
       }
       await _saveLockEnabledPersist();
       if (!mounted) return false;
-      await _ensureUsageAccessIfNeeded();
+      await _ensureAppLockReadyIfNeeded();
       return true;
     } catch (_) {
       if (mounted) {
@@ -2450,6 +2346,11 @@ class _ChessLockShellState extends State<ChessLockShell>
   }
 
   Future<void> _openAppPicker({bool requireSolved = true}) async {
+    if (!_appLock.isSupported) {
+      _snack(_appLock.unsupportedMessage);
+      return;
+    }
+
     final editingExistingLocks = _lockedPackages.isNotEmpty;
     if (requireSolved && editingExistingLocks && !_canUnlockApps) {
       _snack("Solve a puzzle to edit locked apps.");
@@ -2484,7 +2385,7 @@ class _ChessLockShellState extends State<ChessLockShell>
     await _saveLockedPackages();
     AppAnalytics.lockedAppsSelectionSaved(sanitized.length);
     await _completeOnboarding();
-    await _ensureUsageAccessIfNeeded();
+    await _ensureAppLockReadyIfNeeded();
     _scheduleDeferredLockedIconPrefetch();
     _snack("Apps locked.");
   }
