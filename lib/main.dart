@@ -38,18 +38,16 @@ Future<void> main() async {
 }
 
 Future<bool> _initializeFirebaseIfConfigured() async {
+  final FirebaseOptions options;
   try {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-    return true;
+    options = DefaultFirebaseOptions.currentPlatform;
   } on UnsupportedError catch (error) {
     debugPrint("[firebase][init] Firebase not configured: $error");
     return false;
-  } catch (error) {
-    debugPrint("[firebase][init] Firebase initialization failed: $error");
-    return false;
   }
+
+  await Firebase.initializeApp(options: options);
+  return true;
 }
 
 Future<void> _initializeMobileAds() async {
@@ -919,6 +917,19 @@ class _ChessLockShellState extends State<ChessLockShell>
           ],
         ),
       );
+      await _appLock.stopEnforcement();
+      return;
+    }
+
+    if (permissionStatus.issue ==
+        AppLockPermissionIssue.screenTimeAuthorizationRequired) {
+      _snack("Screen Time permission is required.");
+      await _appLock.stopEnforcement();
+      return;
+    }
+
+    if (permissionStatus.issue == AppLockPermissionIssue.unsupported) {
+      _snack(_appLock.unsupportedMessage);
       await _appLock.stopEnforcement();
       return;
     }
@@ -2351,6 +2362,11 @@ class _ChessLockShellState extends State<ChessLockShell>
       return;
     }
 
+    if (_appLock.usesNativeAppPicker) {
+      await _openNativeAppPicker();
+      return;
+    }
+
     final editingExistingLocks = _lockedPackages.isNotEmpty;
     if (requireSolved && editingExistingLocks && !_canUnlockApps) {
       _snack("Solve a puzzle to edit locked apps.");
@@ -2388,6 +2404,29 @@ class _ChessLockShellState extends State<ChessLockShell>
     await _ensureAppLockReadyIfNeeded();
     _scheduleDeferredLockedIconPrefetch();
     _snack("Apps locked.");
+  }
+
+  Future<void> _openNativeAppPicker() async {
+    final result = await _appLock.openNativeAppPicker();
+    if (!mounted || result == null) return;
+
+    final errorMessage = result.errorMessage;
+    if (!result.completed) {
+      if (errorMessage != null && errorMessage.isNotEmpty) {
+        _snack(errorMessage);
+      }
+      return;
+    }
+
+    AppAnalytics.lockedAppsSelectionSaved(result.totalCount);
+    await _completeOnboarding();
+    if (!mounted) return;
+
+    if (result.totalCount == 0) {
+      _snack("No apps selected.");
+    } else {
+      _snack("Selection saved. iOS locking comes next.");
+    }
   }
 
   static const String _privacyPolicyUrl =

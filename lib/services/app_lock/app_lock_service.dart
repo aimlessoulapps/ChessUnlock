@@ -6,6 +6,7 @@ enum AppLockPermissionIssue {
   unsupported,
   usageAccessRequired,
   overlayPermissionRequired,
+  screenTimeAuthorizationRequired,
 }
 
 class AppLockPermissionStatus {
@@ -30,10 +31,32 @@ class AppLockStateSnapshot {
   final int unlockUntilMs;
 }
 
+class NativeAppSelectionResult {
+  const NativeAppSelectionResult({
+    required this.completed,
+    required this.applicationCount,
+    required this.categoryCount,
+    required this.webDomainCount,
+    required this.includeEntireCategory,
+    this.errorMessage,
+  });
+
+  final bool completed;
+  final int applicationCount;
+  final int categoryCount;
+  final int webDomainCount;
+  final bool includeEntireCategory;
+  final String? errorMessage;
+
+  int get totalCount => applicationCount + categoryCount + webDomainCount;
+}
+
 abstract class AppLockService {
   const AppLockService();
 
   bool get isSupported;
+
+  bool get usesNativeAppPicker => false;
 
   String get unsupportedMessage =>
       "App locking isn't available on this platform yet.";
@@ -49,6 +72,8 @@ abstract class AppLockService {
     Set<String> appIds,
   ) async =>
       <Map<String, dynamic>>[];
+
+  Future<NativeAppSelectionResult?> openNativeAppPicker() async => null;
 
   Future<Set<String>> sanitizeLockedAppIds(Set<String> appIds) async {
     final ownAppId = await getOwnAppId();
@@ -256,6 +281,140 @@ class AndroidAppLockService extends AppLockService {
   }
 }
 
+class IosScreenTimeAppLockService extends AppLockService {
+  IosScreenTimeAppLockService({
+    MethodChannel channel = const MethodChannel("chesslock/screen_time"),
+  }) : _channel = channel;
+
+  final MethodChannel _channel;
+
+  @override
+  bool get isSupported => true;
+
+  @override
+  bool get usesNativeAppPicker => true;
+
+  @override
+  String get unsupportedMessage => "Screen Time setup isn't available.";
+
+  @override
+  Future<AppLockPermissionStatus> checkPermissions({
+    required bool requiresOverlay,
+  }) async {
+    final available = await _isScreenTimeAvailable();
+    if (!available) {
+      return const AppLockPermissionStatus(AppLockPermissionIssue.unsupported);
+    }
+
+    final status = await _authorizationStatus();
+    if (status == "approved") {
+      return const AppLockPermissionStatus(AppLockPermissionIssue.none);
+    }
+
+    return const AppLockPermissionStatus(
+      AppLockPermissionIssue.screenTimeAuthorizationRequired,
+    );
+  }
+
+  @override
+  Future<NativeAppSelectionResult?> openNativeAppPicker() async {
+    final available = await _isScreenTimeAvailable();
+    if (!available) {
+      return _selectionFailure("Screen Time setup isn't available.");
+    }
+
+    final Map<String, dynamic> auth;
+    try {
+      auth = await _invokeMap("requestAuthorization");
+    } on PlatformException catch (error) {
+      return _selectionFailure(
+        error.message ?? "Screen Time permission is required.",
+      );
+    }
+
+    if ((auth["status"] ?? "").toString() != "approved") {
+      return _selectionFailure("Screen Time permission is required.");
+    }
+
+    final Map<String, dynamic> raw;
+    try {
+      raw = await _invokeMap("presentFamilyActivityPicker");
+    } on PlatformException catch (error) {
+      return _selectionFailure(
+        error.message ?? "Unable to open Screen Time app picker.",
+      );
+    }
+
+    return _selectionResultFromMap(raw);
+  }
+
+  @override
+  Future<void> syncLockState(AppLockStateSnapshot snapshot) async {
+    // TODO(phase4): Apply or clear ManagedSettings shields from the native
+    // FamilyActivitySelection. Keep Android package IDs out of iOS storage.
+  }
+
+  @override
+  Future<void> startEnforcement() async {
+    // TODO(phase4): Start iOS shield enforcement with ManagedSettings.
+  }
+
+  @override
+  Future<void> hideActiveBlocker() async {
+    // TODO(phase4): Temporarily clear iOS ManagedSettings shields after unlock.
+  }
+
+  @override
+  Future<void> stopEnforcement() async {
+    // TODO(phase4): Clear iOS ManagedSettings shields when lock is disabled.
+  }
+
+  Future<bool> _isScreenTimeAvailable() async {
+    try {
+      final raw = await _invokeMap("isAvailable");
+      return raw["available"] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<String> _authorizationStatus() async {
+    try {
+      final raw = await _invokeMap("authorizationStatus");
+      return (raw["status"] ?? "unknown").toString();
+    } catch (_) {
+      return "unknown";
+    }
+  }
+
+  Future<Map<String, dynamic>> _invokeMap(String method) async {
+    final raw = await _channel.invokeMethod<Map<dynamic, dynamic>>(method);
+    return Map<String, dynamic>.from(raw ?? const <String, dynamic>{});
+  }
+
+  NativeAppSelectionResult _selectionResultFromMap(Map<String, dynamic> raw) {
+    return NativeAppSelectionResult(
+      completed: raw["completed"] == true,
+      applicationCount: (raw["applicationCount"] as num?)?.toInt() ?? 0,
+      categoryCount: (raw["categoryCount"] as num?)?.toInt() ?? 0,
+      webDomainCount: (raw["webDomainCount"] as num?)?.toInt() ?? 0,
+      includeEntireCategory: raw["includeEntireCategory"] == true,
+      errorMessage: raw["errorMessage"]?.toString(),
+    );
+  }
+
+  NativeAppSelectionResult _selectionFailure(String message) {
+    return NativeAppSelectionResult(
+      completed: false,
+      applicationCount: 0,
+      categoryCount: 0,
+      webDomainCount: 0,
+      includeEntireCategory: false,
+      errorMessage: message,
+    );
+  }
+}
+
 class UnsupportedAppLockService extends AppLockService {
   const UnsupportedAppLockService({
     this.message = "App locking isn't available on iOS yet.",
@@ -276,7 +435,7 @@ AppLockService createAppLockService() {
   }
 
   if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
-    return const UnsupportedAppLockService();
+    return IosScreenTimeAppLockService();
   }
 
   return const UnsupportedAppLockService(
