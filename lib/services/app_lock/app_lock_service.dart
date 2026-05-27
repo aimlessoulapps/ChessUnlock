@@ -75,6 +75,10 @@ abstract class AppLockService {
 
   Future<NativeAppSelectionResult?> openNativeAppPicker() async => null;
 
+  Future<bool> hasConfiguredLocks(Set<String> appIds) async {
+    return (await sanitizeLockedAppIds(appIds)).isNotEmpty;
+  }
+
   Future<Set<String>> sanitizeLockedAppIds(Set<String> appIds) async {
     final ownAppId = await getOwnAppId();
     return appIds
@@ -101,6 +105,10 @@ abstract class AppLockService {
   Future<void> hideActiveBlocker() async {}
 
   Future<void> stopEnforcement() async {}
+
+  Future<void> unlockFor(Duration? duration) async {}
+
+  Future<void> relockNow() async {}
 }
 
 class AndroidAppLockService extends AppLockService {
@@ -349,24 +357,62 @@ class IosScreenTimeAppLockService extends AppLockService {
   }
 
   @override
+  Future<bool> hasConfiguredLocks(Set<String> appIds) async {
+    try {
+      final raw = await _invokeMap("selectionMetadata");
+      return _selectionResultFromMap(raw).totalCount > 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
   Future<void> syncLockState(AppLockStateSnapshot snapshot) async {
-    // TODO(phase4): Apply or clear ManagedSettings shields from the native
-    // FamilyActivitySelection. Keep Android package IDs out of iOS storage.
+    try {
+      await _invokeOperation("syncLockState", {
+        "lockEnabled": snapshot.lockEnabled,
+        "indefiniteUnlock": snapshot.indefiniteUnlock,
+        "unlockUntilMs": snapshot.unlockUntilMs,
+      });
+    } on PlatformException catch (error) {
+      if (error.code != "authorizationRequired") rethrow;
+    }
   }
 
   @override
   Future<void> startEnforcement() async {
-    // TODO(phase4): Start iOS shield enforcement with ManagedSettings.
+    await _invokeOperation("startEnforcement");
   }
 
   @override
   Future<void> hideActiveBlocker() async {
-    // TODO(phase4): Temporarily clear iOS ManagedSettings shields after unlock.
+    await _invokeOperation("clearShields");
   }
 
   @override
   Future<void> stopEnforcement() async {
-    // TODO(phase4): Clear iOS ManagedSettings shields when lock is disabled.
+    await _invokeOperation("stopEnforcement");
+  }
+
+  @override
+  Future<void> unlockFor(Duration? duration) async {
+    final now = DateTime.now();
+    await _invokeOperation("unlockFor", {
+      "durationMs": duration?.inMilliseconds ?? 0,
+      "indefinite": duration == null,
+      "unlockUntilMs": duration == null
+          ? 0
+          : now.add(duration).millisecondsSinceEpoch,
+    });
+  }
+
+  @override
+  Future<void> relockNow() async {
+    try {
+      await _invokeOperation("relockNow");
+    } on PlatformException catch (error) {
+      if (error.code != "authorizationRequired") rethrow;
+    }
   }
 
   Future<bool> _isScreenTimeAvailable() async {
@@ -390,6 +436,26 @@ class IosScreenTimeAppLockService extends AppLockService {
   Future<Map<String, dynamic>> _invokeMap(String method) async {
     final raw = await _channel.invokeMethod<Map<dynamic, dynamic>>(method);
     return Map<String, dynamic>.from(raw ?? const <String, dynamic>{});
+  }
+
+  Future<Map<String, dynamic>> _invokeOperation(
+    String method, [
+    Map<String, dynamic>? arguments,
+  ]) async {
+    final raw = await _channel.invokeMethod<Map<dynamic, dynamic>>(
+      method,
+      arguments,
+    );
+    final payload = Map<String, dynamic>.from(raw ?? const <String, dynamic>{});
+    if (payload["success"] == false) {
+      throw PlatformException(
+        code: payload["code"]?.toString() ?? method,
+        message: payload["errorMessage"]?.toString() ??
+            payload["message"]?.toString() ??
+            "Screen Time operation failed.",
+      );
+    }
+    return payload;
   }
 
   NativeAppSelectionResult _selectionResultFromMap(Map<String, dynamic> raw) {

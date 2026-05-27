@@ -843,7 +843,10 @@ class _ChessLockShellState extends State<ChessLockShell>
   Future<void> _ensureAppLockReadyIfNeeded() async {
     await _syncAppLockStateToNative();
 
-    if (_lockedPackages.isEmpty) {
+    final hasConfiguredLocks =
+        await _appLock.hasConfiguredLocks(_lockedPackages);
+
+    if (!hasConfiguredLocks) {
       await _appLock.stopEnforcement();
       return;
     }
@@ -936,7 +939,7 @@ class _ChessLockShellState extends State<ChessLockShell>
 
     final hasTimedUnlock = !_indefiniteUnlock && _unlockedUntil != null;
     final shouldRunWatcher =
-        _lockedPackages.isNotEmpty && (_lockEnabled || hasTimedUnlock);
+        hasConfiguredLocks && (_lockEnabled || hasTimedUnlock);
 
     if (shouldRunWatcher) {
       await _appLock.requestNotificationPermissionIfNeeded();
@@ -1070,6 +1073,10 @@ class _ChessLockShellState extends State<ChessLockShell>
     final saved =
         await _syncLockStateToStorageAndWatcher(includeUnlockState: true);
 
+    if (saved) {
+      await _appLock.relockNow();
+    }
+
     if (resetPuzzle) {
       _queuePuzzleRefresh("relock");
     }
@@ -1093,6 +1100,12 @@ class _ChessLockShellState extends State<ChessLockShell>
     final saved =
         await _syncLockStateToStorageAndWatcher(includeUnlockState: true);
 
+    if (saved) {
+      await _appLock.unlockFor(
+        minutes == null ? null : Duration(minutes: minutes),
+      );
+    }
+
     _queuePuzzleRefresh("unlock");
     if (mounted) setState(() {});
     return saved;
@@ -1107,6 +1120,10 @@ class _ChessLockShellState extends State<ChessLockShell>
 
     final saved =
         await _syncLockStateToStorageAndWatcher(includeUnlockState: true);
+
+    if (saved) {
+      await _appLock.unlockFor(const Duration(hours: 24));
+    }
 
     _queuePuzzleRefresh("unlock24h");
     if (mounted) setState(() {});
@@ -2420,12 +2437,13 @@ class _ChessLockShellState extends State<ChessLockShell>
 
     AppAnalytics.lockedAppsSelectionSaved(result.totalCount);
     await _completeOnboarding();
+    await _ensureAppLockReadyIfNeeded();
     if (!mounted) return;
 
     if (result.totalCount == 0) {
       _snack("No apps selected.");
     } else {
-      _snack("Selection saved. iOS locking comes next.");
+      _snack("Apps locked.");
     }
   }
 
