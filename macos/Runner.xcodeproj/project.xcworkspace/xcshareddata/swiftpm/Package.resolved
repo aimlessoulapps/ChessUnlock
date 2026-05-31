@@ -23,8 +23,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/firebase/firebase-ios-sdk",
       "state" : {
-        "revision" : "8d5b4189f1f482df8d5c58c9985ea70491ef5382",
-        "version" : "12.14.0"
+        "revision" : "d10045cace0b4c335c4efa8f7df7e9a9fc5a7c60",
+        "version" : "12.13.0"
       }
     },
     {
@@ -32,8 +32,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/googleads/google-ads-on-device-conversion-ios-sdk",
       "state" : {
-        "revision" : "9bfcc6cf435b2e7c5562c1900b8680c594fa9a64",
-        "version" : "3.6.0"
+        "revision" : "19dffda9a9caf8d86570ff846535902d8509d7bf",
+        "version" : "3.5.0"
       }
     },
     {
@@ -41,8 +41,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/google/GoogleAppMeasurement.git",
       "state" : {
-        "revision" : "219e564a8510e983e675c94f77f7f7c50049f22d",
-        "version" : "12.14.0"
+        "revision" : "c2c76bebcfbb90d90ea10599f934f9af160e1604",
+        "version" : "12.13.0"
       }
     },
     {
@@ -115,24 +115,6 @@
       "state" : {
         "revision" : "540318ecedd63d883069ae7f1ed811a2df00b6ac",
         "version" : "2.4.0"
-      }
-    },
-    {
-      "identity" : "swift-package-manager-google-mobile-ads",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/googleads/swift-package-manager-google-mobile-ads",
-      "state" : {
-        "revision" : "a81f522aa4f59c0d90ee523d703bd426d5b27a03",
-        "version" : "13.4.0"
-      }
-    },
-    {
-      "identity" : "swift-package-manager-google-user-messaging-platform",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/googleads/swift-package-manager-google-user-messaging-platform.git",
-      "state" : {
-        "revision" : "13b248eaa73b7826f0efb1bcf455e251d65ecb1b",
-        "version" : "3.1.0"
       }
     }
   ],
