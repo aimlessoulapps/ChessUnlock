@@ -220,6 +220,8 @@ class _ChessLockShellState extends State<ChessLockShell>
   late final PuzzleQueueService _puzzleQueue;
   late final AppLockService _appLock;
   bool _unsupportedAppLockMessageShown = false;
+  NativeAppSelectionResult? _appLockSelectionSummary;
+  bool _openAppPickerAfterPuzzleSolve = false;
 
   DateTime? get _unlockedUntil => _lockState.unlockedUntil;
   set _unlockedUntil(DateTime? value) => _lockState.unlockedUntil = value;
@@ -232,6 +234,14 @@ class _ChessLockShellState extends State<ChessLockShell>
 
   Set<String> get _lockedPackages => _lockState.lockedPackages;
   set _lockedPackages(Set<String> value) => _lockState.lockedPackages = value;
+
+  int get _lockedSelectionCount =>
+      _appLockSelectionSummary?.totalCount ?? _lockedPackages.length;
+
+  List<String> get _lockedSelectionSummaryLines =>
+      _appLockSelectionSummary?.summaryLines ?? const <String>[];
+
+  bool get _hasAnyLockedSelection => _lockedSelectionCount > 0;
 
   // Board
   final ChessBoardController _boardController = ChessBoardController();
@@ -433,7 +443,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   Future<void> _maybeShowFirstLaunchOnboarding() async {
     final prefs = await _prefsFuture;
 
-    if (_lockedPackages.isNotEmpty) {
+    if (_hasAnyLockedSelection) {
       if (prefs.getBool(_kOnboardingComplete) != true) {
         await prefs.setBool(_kOnboardingComplete, true);
       }
@@ -457,10 +467,39 @@ class _ChessLockShellState extends State<ChessLockShell>
     await prefs.setBool(_kOnboardingComplete, true);
   }
 
+  Future<NativeAppSelectionResult?> _refreshAppLockSelectionSummary({
+    bool notify = true,
+  }) async {
+    final summary = await _appLock.getSelectionSummary();
+    if (!mounted) return summary;
+
+    if (_sameSelectionSummary(_appLockSelectionSummary, summary)) {
+      return summary;
+    }
+
+    _appLockSelectionSummary = summary;
+    if (notify) {
+      setState(() {});
+    }
+    return summary;
+  }
+
+  bool _sameSelectionSummary(
+    NativeAppSelectionResult? a,
+    NativeAppSelectionResult? b,
+  ) {
+    if (identical(a, b)) return true;
+    if (a == null || b == null) return a == null && b == null;
+    return a.applicationCount == b.applicationCount &&
+        a.categoryCount == b.categoryCount &&
+        a.webDomainCount == b.webDomainCount &&
+        a.includeEntireCategory == b.includeEntireCategory;
+  }
+
   Future<void> _showFirstLaunchOnboardingDialog() async {
     if (!mounted) return;
 
-    if (_lockedPackages.isNotEmpty) {
+    if (_hasAnyLockedSelection) {
       await _completeOnboarding();
       return;
     }
@@ -843,7 +882,8 @@ class _ChessLockShellState extends State<ChessLockShell>
   Future<void> _ensureAppLockReadyIfNeeded() async {
     await _syncAppLockStateToNative();
 
-    final hasConfiguredLocks =
+    final selectionSummary = await _refreshAppLockSelectionSummary();
+    final hasConfiguredLocks = selectionSummary?.hasSelection ??
         await _appLock.hasConfiguredLocks(_lockedPackages);
 
     if (!hasConfiguredLocks) {
@@ -1367,6 +1407,14 @@ class _ChessLockShellState extends State<ChessLockShell>
     if (_extraPuzzleMode) {
       _snack("Solved. Loading next puzzle…");
       unawaited(_loadExtraPuzzle());
+      return;
+    }
+
+    if (_openAppPickerAfterPuzzleSolve) {
+      _openAppPickerAfterPuzzleSolve = false;
+      _puzzleSolvedChoiceShown = true;
+      _snack("Puzzle solved. Opening app selection.");
+      unawaited(_openAppPicker(requireSolved: false));
       return;
     }
 
@@ -2379,15 +2427,20 @@ class _ChessLockShellState extends State<ChessLockShell>
       return;
     }
 
-    if (_appLock.usesNativeAppPicker) {
-      await _openNativeAppPicker();
+    final selectionSummary = await _refreshAppLockSelectionSummary(
+      notify: false,
+    );
+    final editingExistingLocks = selectionSummary?.hasSelection ??
+        await _appLock.hasConfiguredLocks(_lockedPackages);
+    if (requireSolved && editingExistingLocks && !_canUnlockApps) {
+      _openAppPickerAfterPuzzleSolve = true;
+      _snack("Solve a puzzle to edit locked apps.");
+      _goPuzzle();
       return;
     }
 
-    final editingExistingLocks = _lockedPackages.isNotEmpty;
-    if (requireSolved && editingExistingLocks && !_canUnlockApps) {
-      _snack("Solve a puzzle to edit locked apps.");
-      _goPuzzle();
+    if (_appLock.usesNativeAppPicker) {
+      await _openNativeAppPicker();
       return;
     }
 

@@ -49,6 +49,27 @@ class NativeAppSelectionResult {
   final String? errorMessage;
 
   int get totalCount => applicationCount + categoryCount + webDomainCount;
+
+  bool get hasSelection => totalCount > 0;
+
+  List<String> get summaryLines {
+    final lines = <String>[];
+    if (applicationCount > 0) {
+      lines.add(_selectedLabel(applicationCount, "app"));
+    }
+    if (categoryCount > 0) {
+      lines.add(_selectedLabel(categoryCount, "category"));
+    }
+    if (webDomainCount > 0) {
+      lines.add(_selectedLabel(webDomainCount, "web domain"));
+    }
+    return lines;
+  }
+
+  static String _selectedLabel(int count, String noun) {
+    final plural = count == 1 ? noun : "${noun}s";
+    return "$count $plural selected";
+  }
 }
 
 abstract class AppLockService {
@@ -74,6 +95,8 @@ abstract class AppLockService {
       <Map<String, dynamic>>[];
 
   Future<NativeAppSelectionResult?> openNativeAppPicker() async => null;
+
+  Future<NativeAppSelectionResult?> getSelectionSummary() async => null;
 
   Future<bool> hasConfiguredLocks(Set<String> appIds) async {
     return (await sanitizeLockedAppIds(appIds)).isNotEmpty;
@@ -353,17 +376,37 @@ class IosScreenTimeAppLockService extends AppLockService {
       );
     }
 
-    return _selectionResultFromMap(raw);
+    final result = _selectionResultFromMap(raw);
+    _debugScreenTime(
+      "picker result; completed=${result.completed} "
+      "apps=${result.applicationCount} "
+      "categories=${result.categoryCount} "
+      "webDomains=${result.webDomainCount}",
+    );
+    return result;
+  }
+
+  @override
+  Future<NativeAppSelectionResult?> getSelectionSummary() async {
+    try {
+      final raw = await _invokeMap("selectionMetadata");
+      final summary = _selectionResultFromMap(raw);
+      _debugScreenTime(
+        "selection summary; apps=${summary.applicationCount} "
+        "categories=${summary.categoryCount} "
+        "webDomains=${summary.webDomainCount}",
+      );
+      return summary;
+    } catch (error) {
+      _debugScreenTime("selection summary failed; error=$error");
+      return null;
+    }
   }
 
   @override
   Future<bool> hasConfiguredLocks(Set<String> appIds) async {
-    try {
-      final raw = await _invokeMap("selectionMetadata");
-      return _selectionResultFromMap(raw).totalCount > 0;
-    } catch (_) {
-      return false;
-    }
+    final summary = await getSelectionSummary();
+    return summary?.hasSelection ?? false;
   }
 
   @override
@@ -427,7 +470,9 @@ class IosScreenTimeAppLockService extends AppLockService {
   Future<String> _authorizationStatus() async {
     try {
       final raw = await _invokeMap("authorizationStatus");
-      return (raw["status"] ?? "unknown").toString();
+      final status = (raw["status"] ?? "unknown").toString();
+      _debugScreenTime("authorization status=$status");
+      return status;
     } catch (_) {
       return "unknown";
     }
@@ -447,6 +492,14 @@ class IosScreenTimeAppLockService extends AppLockService {
       arguments,
     );
     final payload = Map<String, dynamic>.from(raw ?? const <String, dynamic>{});
+    _debugScreenTime(
+      "operation $method result; success=${payload["success"]} "
+      "shielded=${payload["shielded"]} "
+      "apps=${payload["applicationCount"]} "
+      "categories=${payload["categoryCount"]} "
+      "webDomains=${payload["webDomainCount"]} "
+      "code=${payload["code"]}",
+    );
     if (payload["success"] == false) {
       throw PlatformException(
         code: payload["code"]?.toString() ?? method,
@@ -456,6 +509,10 @@ class IosScreenTimeAppLockService extends AppLockService {
       );
     }
     return payload;
+  }
+
+  void _debugScreenTime(String message) {
+    debugPrint("[screen-time][dart] $message");
   }
 
   NativeAppSelectionResult _selectionResultFromMap(Map<String, dynamic> raw) {
