@@ -1,7 +1,7 @@
 import 'dart:convert';
 
-import 'package:chesslock/main.dart';
-import 'package:chesslock/services/puzzle_queue_service.dart';
+import 'package:chessUnlock/main.dart';
+import 'package:chessUnlock/services/puzzle_queue_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';

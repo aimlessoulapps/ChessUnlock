@@ -98,6 +98,8 @@ abstract class AppLockService {
 
   Future<NativeAppSelectionResult?> getSelectionSummary() async => null;
 
+  Future<NativeAppSelectionResult?> showNativeSelectionPreview() async => null;
+
   Future<bool> hasConfiguredLocks(Set<String> appIds) async {
     return (await sanitizeLockedAppIds(appIds)).isNotEmpty;
   }
@@ -404,6 +406,31 @@ class IosScreenTimeAppLockService extends AppLockService {
   }
 
   @override
+  Future<NativeAppSelectionResult?> showNativeSelectionPreview() async {
+    try {
+      final raw = await _invokeMap("presentSelectionPreview");
+      final result = _selectionResultFromMap(raw);
+      _debugScreenTime(
+        "selection preview result; completed=${result.completed} "
+        "apps=${result.applicationCount} "
+        "categories=${result.categoryCount} "
+        "webDomains=${result.webDomainCount}",
+      );
+      return result;
+    } on PlatformException catch (error) {
+      _debugScreenTime(
+        "selection preview failed; code=${error.code} message=${error.message}",
+      );
+      return _selectionFailure(
+        error.message ?? "Unable to show selected Screen Time apps.",
+      );
+    } catch (error) {
+      _debugScreenTime("selection preview failed; error=$error");
+      return _selectionFailure("Unable to show selected Screen Time apps.");
+    }
+  }
+
+  @override
   Future<bool> hasConfiguredLocks(Set<String> appIds) async {
     final summary = await getSelectionSummary();
     return summary?.hasSelection ?? false;
@@ -443,9 +470,8 @@ class IosScreenTimeAppLockService extends AppLockService {
     await _invokeOperation("unlockFor", {
       "durationMs": duration?.inMilliseconds ?? 0,
       "indefinite": duration == null,
-      "unlockUntilMs": duration == null
-          ? 0
-          : now.add(duration).millisecondsSinceEpoch,
+      "unlockUntilMs":
+          duration == null ? 0 : now.add(duration).millisecondsSinceEpoch,
     });
   }
 

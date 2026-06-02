@@ -12,6 +12,6 @@ import UIKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
-    ScreenTimeBridge.register(with: engineBridge.applicationRegistrar.messenger())
+    ScreenTimeBridge.register(with: engineBridge.applicationRegistrar)
   }
 }

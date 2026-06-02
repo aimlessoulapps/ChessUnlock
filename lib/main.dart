@@ -59,7 +59,19 @@ Future<void> _initializeMobileAds() async {
 
   try {
     final status = await MobileAds.instance.initialize();
-    debugPrint("[ads][init] Mobile Ads initialized: $status");
+    final adapters = status.adapterStatuses.entries
+        .map(
+          (entry) => "${entry.key}:"
+              "${entry.value.state.name}/"
+              "${entry.value.latency}s/"
+              "${entry.value.description}",
+        )
+        .join("; ");
+    debugPrint(
+      "[ads][init] Mobile Ads initialized; "
+      "platform=${defaultTargetPlatform.name} "
+      "adapters=${adapters.isEmpty ? "none" : adapters}",
+    );
   } catch (error) {
     debugPrint("[ads][init] Mobile Ads initialization failed: $error");
     // Ads are optional; app startup should never depend on ad initialization.
@@ -221,7 +233,8 @@ class _ChessLockShellState extends State<ChessLockShell>
   late final AppLockService _appLock;
   bool _unsupportedAppLockMessageShown = false;
   NativeAppSelectionResult? _appLockSelectionSummary;
-  bool _openAppPickerAfterPuzzleSolve = false;
+  bool _returnHomeAfterEditPuzzleSolve = false;
+  int _appLockSelectionPreviewRevision = 0;
 
   DateTime? get _unlockedUntil => _lockState.unlockedUntil;
   set _unlockedUntil(DateTime? value) => _lockState.unlockedUntil = value;
@@ -312,8 +325,17 @@ class _ChessLockShellState extends State<ChessLockShell>
       "ca-app-pub-8108010703558411/1847579539";
   static const String _productionRewardedAdUnitId =
       "ca-app-pub-8108010703558411/1847579539";
+  static const String _iosDebugRewardedTestAdUnitId =
+      "ca-app-pub-3940256099942544/1712485313";
   static const String _configuredRewardedAdUnitId = String.fromEnvironment(
     "CHESSUNLOCK_REWARDED_AD_UNIT_ID",
+  );
+  static const String _configuredAndroidRewardedAdUnitId =
+      String.fromEnvironment(
+    "CHESSUNLOCK_ANDROID_REWARDED_AD_UNIT_ID",
+  );
+  static const String _configuredIosRewardedAdUnitId = String.fromEnvironment(
+    "CHESSUNLOCK_IOS_REWARDED_AD_UNIT_ID",
   );
   static const Duration _rewardedInitialRetryDelay = Duration(seconds: 30);
   static const Duration _rewardedMaxRetryDelay = Duration(minutes: 5);
@@ -321,6 +343,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   RewardedAd? _rewardedAd;
   Future<RewardedAd?>? _rewardedAdLoadFuture;
   LoadAdError? _lastRewardedAdLoadError;
+  AdError? _lastRewardedAdShowError;
   DateTime? _nextRewardedRetryAt;
   Duration _rewardedRetryDelay = _rewardedInitialRetryDelay;
   Timer? _rewardedRetryTimer;
@@ -328,6 +351,7 @@ class _ChessLockShellState extends State<ChessLockShell>
   bool _rewardedActionInProgress = false;
   bool _rewardedDialogShowing = false;
   bool _loggedInvalidRewardedAdUnitId = false;
+  bool _loggedRewardedConfiguration = false;
 
   // Blink hint overlay
   String? _hintFromSquare;
@@ -1410,11 +1434,12 @@ class _ChessLockShellState extends State<ChessLockShell>
       return;
     }
 
-    if (_openAppPickerAfterPuzzleSolve) {
-      _openAppPickerAfterPuzzleSolve = false;
+    if (_returnHomeAfterEditPuzzleSolve) {
+      _returnHomeAfterEditPuzzleSolve = false;
       _puzzleSolvedChoiceShown = true;
-      _snack("Puzzle solved. Opening app selection.");
-      unawaited(_openAppPicker(requireSolved: false));
+      _extraPuzzleMode = false;
+      _goHome();
+      _snack("Puzzle solved. You can edit locked apps now.");
       return;
     }
 
@@ -1488,14 +1513,65 @@ class _ChessLockShellState extends State<ChessLockShell>
   // Hint/Skip ads
   // =========================
   String get _rewardedAdUnitId {
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      final configuredIos = _configuredIosRewardedAdUnitId.trim();
+      if (configuredIos.isNotEmpty) {
+        return configuredIos;
+      }
+
+      final configured = _configuredRewardedAdUnitId.trim();
+      if (configured.isNotEmpty) {
+        return configured;
+      }
+
+      if (kReleaseMode) {
+        return _productionRewardedAdUnitId;
+      }
+
+      return _iosDebugRewardedTestAdUnitId;
+    }
+
+    final configuredAndroid = _configuredAndroidRewardedAdUnitId.trim();
+    if (configuredAndroid.isNotEmpty) {
+      return configuredAndroid;
+    }
+
     final configured = _configuredRewardedAdUnitId.trim();
     if (configured.isNotEmpty) {
       return configured;
     }
+
     if (kReleaseMode) {
       return _productionRewardedAdUnitId;
     }
     return _testRewardedAdUnitId;
+  }
+
+  String get _rewardedAdUnitSource {
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      if (_configuredIosRewardedAdUnitId.trim().isNotEmpty) {
+        return "ios-dart-define";
+      }
+      if (_configuredRewardedAdUnitId.trim().isNotEmpty) {
+        return "shared-dart-define";
+      }
+      return kReleaseMode ? "shared-release-default" : "ios-debug-test";
+    }
+
+    if (defaultTargetPlatform == TargetPlatform.android &&
+        _configuredAndroidRewardedAdUnitId.trim().isNotEmpty) {
+      return "android-dart-define";
+    }
+    if (_configuredRewardedAdUnitId.trim().isNotEmpty) {
+      return "shared-dart-define";
+    }
+    return kReleaseMode ? "shared-release-default" : "shared-debug-default";
+  }
+
+  String get _rewardedPlatformLabel {
+    if (defaultTargetPlatform == TargetPlatform.iOS) return "ios";
+    if (defaultTargetPlatform == TargetPlatform.android) return "android";
+    return defaultTargetPlatform.name;
   }
 
   bool get _hasUsableRewardedAdUnitId => _isValidAdUnitId(_rewardedAdUnitId);
@@ -1613,6 +1689,7 @@ class _ChessLockShellState extends State<ChessLockShell>
                                 watchBusy = false;
                                 errorText = _rewardedAdUnavailableMessage(
                                   _lastRewardedAdLoadError,
+                                  showError: _lastRewardedAdShowError,
                                 );
                               });
                               return;
@@ -1653,10 +1730,20 @@ class _ChessLockShellState extends State<ChessLockShell>
           return;
         case _RewardedAdResult.unavailable:
           _logRewardedAdFailed(action, adResult: "not_available");
-          _snack(_rewardedAdUnavailableMessage(_lastRewardedAdLoadError));
+          _snack(
+            _rewardedAdUnavailableMessage(
+              _lastRewardedAdLoadError,
+              showError: _lastRewardedAdShowError,
+            ),
+          );
         case _RewardedAdResult.failedToShow:
           _logRewardedAdFailed(action, adResult: "failed");
-          _snack(_rewardedAdUnavailableMessage(_lastRewardedAdLoadError));
+          _snack(
+            _rewardedAdUnavailableMessage(
+              _lastRewardedAdLoadError,
+              showError: _lastRewardedAdShowError,
+            ),
+          );
       }
     } finally {
       _rewardedDialogShowing = false;
@@ -1724,6 +1811,13 @@ class _ChessLockShellState extends State<ChessLockShell>
 
   Future<bool> _prepareRewardedAdForWatch() async {
     final ad = _rewardedAd ?? await _loadRewardedAd(reason: "watch_button");
+    if (ad == null) {
+      _debugRewarded(
+        "rewarded watch unavailable; "
+        "lastLoadError=${_describeRewardedLoadError(_lastRewardedAdLoadError)} "
+        "lastShowError=${_describeRewardedAdError(_lastRewardedAdShowError)}",
+      );
+    }
     return ad != null;
   }
 
@@ -1736,6 +1830,8 @@ class _ChessLockShellState extends State<ChessLockShell>
       _lastRewardedAdLoadError = null;
       return Future.value(null);
     }
+
+    _debugRewardedConfigurationIfNeeded();
 
     if (!_hasUsableRewardedAdUnitId) {
       _debugInvalidRewardedAdUnitId();
@@ -1778,9 +1874,12 @@ class _ChessLockShellState extends State<ChessLockShell>
     _rewardedAdLoadFuture = completer.future;
     _cancelRewardedRetryTimer();
     _nextRewardedRetryAt = null;
+    _lastRewardedAdShowError = null;
 
     _debugRewarded(
-      "rewarded load started; reason=$reason adUnitId=$_rewardedAdUnitId",
+      "rewarded load started; platform=$_rewardedPlatformLabel "
+      "source=$_rewardedAdUnitSource reason=$reason "
+      "adUnitId=$_rewardedAdUnitId",
     );
 
     RewardedAd.load(
@@ -1796,6 +1895,7 @@ class _ChessLockShellState extends State<ChessLockShell>
           }
           _rewardedAd = ad;
           _lastRewardedAdLoadError = null;
+          _lastRewardedAdShowError = null;
           _rewardedAdLoadFuture = null;
           _nextRewardedRetryAt = null;
           _rewardedRetryDelay = _rewardedInitialRetryDelay;
@@ -1833,6 +1933,7 @@ class _ChessLockShellState extends State<ChessLockShell>
 
   void _preloadRewardedAd() {
     if (!_rewardedPlatformSupported) return;
+    _debugRewardedConfigurationIfNeeded();
     if (!_hasUsableRewardedAdUnitId) {
       _debugInvalidRewardedAdUnitId();
       return;
@@ -1860,12 +1961,18 @@ class _ChessLockShellState extends State<ChessLockShell>
   }) async {
     final ad = _rewardedAd ?? await _loadRewardedAd(reason: "show");
     if (ad == null) {
+      _debugRewarded(
+        "rewarded show unavailable before presentation; "
+        "action=${_rewardedActionLogName(action)} "
+        "lastLoadError=${_describeRewardedLoadError(_lastRewardedAdLoadError)}",
+      );
       _preloadRewardedAd();
       return _RewardedAdResult.unavailable;
     }
 
     _rewardedAd = null;
     _lastRewardedAdLoadError = null;
+    _lastRewardedAdShowError = null;
 
     if (mounted) {
       setState(() => _rewardedAdShowing = true);
@@ -1906,6 +2013,7 @@ class _ChessLockShellState extends State<ChessLockShell>
         );
       },
       onAdFailedToShowFullScreenContent: (ad, error) {
+        _lastRewardedAdShowError = error;
         _debugRewardedAdError(
           "rewarded failed to show; action=${_rewardedActionLogName(action)}",
           error,
@@ -2003,6 +2111,36 @@ class _ChessLockShellState extends State<ChessLockShell>
     );
   }
 
+  void _debugRewardedConfigurationIfNeeded() {
+    if (_loggedRewardedConfiguration) return;
+    _loggedRewardedConfiguration = true;
+
+    _debugRewarded(
+      "rewarded configuration; platform=$_rewardedPlatformLabel "
+      "source=$_rewardedAdUnitSource release=$kReleaseMode "
+      "adUnitId=$_rewardedAdUnitId",
+    );
+
+    if (defaultTargetPlatform == TargetPlatform.iOS &&
+        _rewardedAdUnitSource == "ios-debug-test") {
+      _debugRewarded(
+        "debug iOS is using Google's official rewarded test ad unit. "
+        "Set CHESSUNLOCK_IOS_REWARDED_AD_UNIT_ID for a real iOS ad unit.",
+      );
+    }
+
+    if (defaultTargetPlatform == TargetPlatform.iOS &&
+        kReleaseMode &&
+        _configuredIosRewardedAdUnitId.trim().isEmpty &&
+        _configuredRewardedAdUnitId.trim().isEmpty) {
+      _debugRewarded(
+        "release iOS is using the shared rewarded ad unit id. "
+        "Verify this is an iOS rewarded ad unit in AdMob, or pass "
+        "CHESSUNLOCK_IOS_REWARDED_AD_UNIT_ID.",
+      );
+    }
+  }
+
   String _rewardedActionLogName(_RewardedPuzzleAction action) {
     switch (action) {
       case _RewardedPuzzleAction.hint:
@@ -2040,8 +2178,59 @@ class _ChessLockShellState extends State<ChessLockShell>
     );
   }
 
-  String _rewardedAdUnavailableMessage(LoadAdError? error) {
-    return "Ad is not available right now. Please check your internet and try again.";
+  String _describeRewardedLoadError(LoadAdError? error) {
+    if (error == null) return "none";
+    return "code=${error.code}, domain=${error.domain}, "
+        "message=${error.message}, responseInfo=${error.responseInfo}";
+  }
+
+  String _describeRewardedAdError(AdError? error) {
+    if (error == null) return "none";
+    return "code=${error.code}, domain=${error.domain}, "
+        "message=${error.message}";
+  }
+
+  String _rewardedAdUnavailableMessage(
+    LoadAdError? loadError, {
+    AdError? showError,
+  }) {
+    final AdError? error = loadError ?? showError;
+    if (error == null) {
+      if (defaultTargetPlatform == TargetPlatform.iOS &&
+          kReleaseMode &&
+          _configuredIosRewardedAdUnitId.trim().isEmpty &&
+          _configuredRewardedAdUnitId.trim().isEmpty) {
+        return "Ad setup is incomplete for iOS.";
+      }
+      return "Ad is not ready yet. Please try again in a moment.";
+    }
+
+    final message = error.message.toLowerCase();
+    final domain = error.domain.toLowerCase();
+
+    if (error.code == 2 ||
+        message.contains("network") ||
+        domain.contains("network")) {
+      return "Ad could not load because of a network issue. Please try again.";
+    }
+
+    if (error.code == 3 ||
+        message.contains("no fill") ||
+        message.contains("no ad")) {
+      return "No ad is available right now. Please try again later.";
+    }
+
+    if (error.code == 1 ||
+        message.contains("invalid") ||
+        message.contains("ad unit") ||
+        message.contains("application identifier") ||
+        message.contains("consent")) {
+      return defaultTargetPlatform == TargetPlatform.iOS
+          ? "Ad setup is incomplete for iOS."
+          : "Ad setup needs attention.";
+    }
+
+    return "Ad could not load right now. Please try again later.";
   }
 
   void _blinkHintFromSquare(String fromSquare) {
@@ -2433,7 +2622,7 @@ class _ChessLockShellState extends State<ChessLockShell>
     final editingExistingLocks = selectionSummary?.hasSelection ??
         await _appLock.hasConfiguredLocks(_lockedPackages);
     if (requireSolved && editingExistingLocks && !_canUnlockApps) {
-      _openAppPickerAfterPuzzleSolve = true;
+      _returnHomeAfterEditPuzzleSolve = true;
       _snack("Solve a puzzle to edit locked apps.");
       _goPuzzle();
       return;
@@ -2487,6 +2676,11 @@ class _ChessLockShellState extends State<ChessLockShell>
       }
       return;
     }
+
+    setState(() {
+      _appLockSelectionSummary = result;
+      _appLockSelectionPreviewRevision++;
+    });
 
     AppAnalytics.lockedAppsSelectionSaved(result.totalCount);
     await _completeOnboarding();
@@ -2610,6 +2804,9 @@ class _ChessLockShellState extends State<ChessLockShell>
               indefiniteUnlock: _indefiniteUnlock,
               unlockRemaining: _unlockRemaining,
               lockedPackages: _lockedPackages,
+              lockedSelectionCount: _lockedSelectionCount,
+              lockedSelectionSummaryLines: _lockedSelectionSummaryLines,
+              lockedSelectionPreviewRevision: _appLockSelectionPreviewRevision,
               difficulty: _difficulty,
               solved: _canUnlockApps,
               timedUnlockActive: timedUnlockActive,
@@ -2621,6 +2818,7 @@ class _ChessLockShellState extends State<ChessLockShell>
                 AppAnalytics.editLockedAppsTapped();
                 unawaited(_openAppPicker());
               },
+              showNativeSelectionPreview: _appLock.usesNativeAppPicker,
               onBreakTime: () {
                 if (!_canUnlockApps) {
                   AppAnalytics.solvePuzzleToUnlockTapped();

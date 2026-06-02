@@ -1,13 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
-import 'dart:typed_data';
 
 import 'package:advanced_chess_board/advanced_chess_board.dart';
 import 'package:advanced_chess_board/chess_board_controller.dart';
 import 'package:advanced_chess_board/models/enums.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' hide Uint8List;
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 
 class ChessPuzzle {
@@ -492,6 +492,9 @@ class HomeTab extends StatelessWidget {
   final bool indefiniteUnlock;
   final Duration unlockRemaining;
   final Set<String> lockedPackages;
+  final int lockedSelectionCount;
+  final List<String> lockedSelectionSummaryLines;
+  final int lockedSelectionPreviewRevision;
 
   final String difficulty;
   final bool solved;
@@ -504,6 +507,7 @@ class HomeTab extends StatelessWidget {
   final Map<String, Uint8List> iconsByPkg;
 
   final VoidCallback onEditLockedApps;
+  final bool showNativeSelectionPreview;
   final VoidCallback onBreakTime;
   final VoidCallback onSolveMorePuzzles;
   final VoidCallback onOpenDifficulty;
@@ -515,6 +519,9 @@ class HomeTab extends StatelessWidget {
     required this.indefiniteUnlock,
     required this.unlockRemaining,
     required this.lockedPackages,
+    required this.lockedSelectionCount,
+    required this.lockedSelectionSummaryLines,
+    required this.lockedSelectionPreviewRevision,
     required this.difficulty,
     required this.solved,
     required this.timedUnlockActive,
@@ -523,6 +530,7 @@ class HomeTab extends StatelessWidget {
     required this.accuracyPct,
     required this.iconsByPkg,
     required this.onEditLockedApps,
+    required this.showNativeSelectionPreview,
     required this.onBreakTime,
     required this.onSolveMorePuzzles,
     required this.onOpenDifficulty,
@@ -548,6 +556,10 @@ class HomeTab extends StatelessWidget {
             : "Solve puzzle to unlock apps";
 
     final lockedList = lockedPackages.toList()..sort();
+    final hasAndroidLockedApps = lockedPackages.isNotEmpty;
+    final showNativeLockedPreview = showNativeSelectionPreview &&
+        !hasAndroidLockedApps &&
+        lockedSelectionCount > 0;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
@@ -718,7 +730,7 @@ class HomeTab extends StatelessWidget {
                           ),
                           const Spacer(),
                           Text(
-                            "${lockedPackages.length}",
+                            "$lockedSelectionCount",
                             style: Theme.of(context)
                                 .textTheme
                                 .labelLarge
@@ -734,13 +746,19 @@ class HomeTab extends StatelessWidget {
                         ],
                       ),
                       const SizedBox(height: 6),
-                      if (lockedPackages.isEmpty)
+                      if (lockedSelectionCount == 0)
                         Text(
                           "No apps selected yet.",
                           style:
                               Theme.of(context).textTheme.bodySmall?.copyWith(
                                     color: cs.onSurfaceVariant,
                                   ),
+                        )
+                      else if (showNativeLockedPreview)
+                        IosLockedSelectionPreview(
+                          selectionCount: lockedSelectionCount,
+                          summaryLines: lockedSelectionSummaryLines,
+                          revision: lockedSelectionPreviewRevision,
                         )
                       else
                         LayoutBuilder(
@@ -836,6 +854,104 @@ class HomeTab extends StatelessWidget {
     return short.length <= 2
         ? short.toUpperCase()
         : short.substring(0, 2).toUpperCase();
+  }
+}
+
+class IosLockedSelectionPreview extends StatelessWidget {
+  static const String _viewType = "chesslock/screen_time_selection_preview";
+
+  final int selectionCount;
+  final List<String> summaryLines;
+  final int revision;
+
+  const IosLockedSelectionPreview({
+    super.key,
+    required this.selectionCount,
+    required this.summaryLines,
+    required this.revision,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) {
+      return NativeSelectionFallbackSummary(summaryLines: summaryLines);
+    }
+
+    return SizedBox(
+      height: 46,
+      width: double.infinity,
+      child: UiKitView(
+        key: ValueKey("$_viewType-$selectionCount-$revision"),
+        viewType: _viewType,
+        creationParams: <String, Object?>{
+          "expectedCount": selectionCount,
+          "revision": revision,
+        },
+        creationParamsCodec: const StandardMessageCodec(),
+      ),
+    );
+  }
+}
+
+class NativeSelectionFallbackSummary extends StatelessWidget {
+  final List<String> summaryLines;
+
+  const NativeSelectionFallbackSummary({
+    super.key,
+    required this.summaryLines,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final lines = summaryLines.isEmpty
+        ? const <String>["Screen Time selections saved"]
+        : summaryLines;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final line in lines)
+              Container(
+                constraints: const BoxConstraints(minHeight: 34),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 7,
+                ),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  color: cs.secondaryContainer.withOpacity(0.55),
+                  border: Border.all(
+                    color: cs.outlineVariant.withOpacity(0.45),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.verified_user_rounded,
+                      size: 16,
+                      color: cs.onSecondaryContainer,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      line,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: cs.onSecondaryContainer,
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ],
+    );
   }
 }
 

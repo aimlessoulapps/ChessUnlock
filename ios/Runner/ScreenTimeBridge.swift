@@ -4,16 +4,25 @@ import ManagedSettings
 import SwiftUI
 import UIKit
 
+private let familyActivitySelectionStoreKey = "ios.familyActivitySelection.v1"
+
 final class ScreenTimeBridge: NSObject {
   private static let channelName = "chesslock/screen_time"
+  private static let selectionPreviewViewType =
+    "chesslock/screen_time_selection_preview"
   private static var sharedBridge: ScreenTimeBridge?
 
   private let channel: FlutterMethodChannel
   private let store = ManagedSettingsStore()
   private var pendingPickerResult: FlutterResult?
+  private var pendingPreviewResult: FlutterResult?
 
-  static func register(with messenger: FlutterBinaryMessenger) {
-    sharedBridge = ScreenTimeBridge(binaryMessenger: messenger)
+  static func register(with registrar: FlutterApplicationRegistrar) {
+    sharedBridge = ScreenTimeBridge(binaryMessenger: registrar.messenger())
+    registrar.register(
+      ScreenTimeSelectionPreviewViewFactory(),
+      withId: selectionPreviewViewType
+    )
   }
 
   private init(binaryMessenger: FlutterBinaryMessenger) {
@@ -40,6 +49,8 @@ final class ScreenTimeBridge: NSObject {
       presentFamilyActivityPicker(result)
     case "selectionMetadata":
       selectionMetadata(result)
+    case "presentSelectionPreview":
+      presentSelectionPreview(result)
     case "syncLockState":
       syncLockState(call.arguments, result)
     case "applyShields":
@@ -73,7 +84,9 @@ final class ScreenTimeBridge: NSObject {
     }
 
     Task { @MainActor in
-      result(statusPayload(status: familyAuthorizationStatusName()))
+      let status = familyAuthorizationStatusName()
+      debugLog("authorization status=\(status)")
+      result(statusPayload(status: status))
     }
   }
 
@@ -90,8 +103,11 @@ final class ScreenTimeBridge: NSObject {
         } else {
           try await requestChildAuthorization()
         }
-        result(statusPayload(status: familyAuthorizationStatusName()))
+        let status = familyAuthorizationStatusName()
+        debugLog("authorization request completed; status=\(status)")
+        result(statusPayload(status: status))
       } catch {
+        debugLog("authorization request failed; error=\(error.localizedDescription)")
         result(
           FlutterError(
             code: "authorizationFailed",
@@ -139,6 +155,9 @@ final class ScreenTimeBridge: NSObject {
 
       pendingPickerResult = result
       let initialSelection = loadSelection()
+      debugLog(
+        "presenting activity picker; apps=\(initialSelection.applicationTokens.count) categories=\(initialSelection.categoryTokens.count) webDomains=\(initialSelection.webDomainTokens.count)"
+      )
       let view = FamilyActivityPickerSheet(
         initialSelection: initialSelection,
         onCancel: { [weak self] in
@@ -162,7 +181,65 @@ final class ScreenTimeBridge: NSObject {
     }
 
     Task { @MainActor in
-      result(selectionPayload(completed: true, selection: loadSelection(), errorMessage: nil))
+      let selection = loadSelection()
+      debugLog(
+        "selection metadata; apps=\(selection.applicationTokens.count) categories=\(selection.categoryTokens.count) webDomains=\(selection.webDomainTokens.count)"
+      )
+      result(selectionPayload(completed: true, selection: selection, errorMessage: nil))
+    }
+  }
+
+  private func presentSelectionPreview(_ result: @escaping FlutterResult) {
+    guard #available(iOS 15.2, *) else {
+      result(selectionPayload(completed: false, errorMessage: "Screen Time setup isn't available."))
+      return
+    }
+
+    Task { @MainActor in
+      guard familyAuthorizationStatusName() == "approved" else {
+        result(selectionPayload(completed: false, errorMessage: "Screen Time permission is required."))
+        return
+      }
+
+      guard pendingPreviewResult == nil else {
+        result(
+          FlutterError(
+            code: "previewAlreadyPresented",
+            message: "The selected Screen Time apps preview is already open.",
+            details: nil
+          )
+        )
+        return
+      }
+
+      let selection = loadSelection()
+      guard selectionTotalCount(selection) > 0 else {
+        result(selectionPayload(completed: false, selection: selection, errorMessage: "No Screen Time apps selected."))
+        return
+      }
+
+      guard let presenter = activeViewController() else {
+        result(
+          FlutterError(
+            code: "missingPresenter",
+            message: "Unable to show selected Screen Time apps.",
+            details: nil
+          )
+        )
+        return
+      }
+
+      pendingPreviewResult = result
+      debugLog(
+        "presenting selection preview; apps=\(selection.applicationTokens.count) categories=\(selection.categoryTokens.count) webDomains=\(selection.webDomainTokens.count)"
+      )
+      let view = FamilyActivitySelectionPreviewSheet(
+        selection: selection,
+        onDone: { [weak self] in
+          self?.finishPreview(selection: selection)
+        }
+      )
+      presenter.present(UIHostingController(rootView: view), animated: true)
     }
   }
 
@@ -182,6 +259,9 @@ final class ScreenTimeBridge: NSObject {
         lockEnabled: lockEnabled,
         indefiniteUnlock: indefiniteUnlock,
         unlockUntilMs: unlockUntilMs
+      )
+      debugLog(
+        "sync lock state; lockEnabled=\(lockEnabled) indefiniteUnlock=\(indefiniteUnlock) unlockUntilMs=\(unlockUntilMs)"
       )
 
       if lockEnabled {
@@ -223,6 +303,7 @@ final class ScreenTimeBridge: NSObject {
     }
 
     Task { @MainActor in
+      debugLog("start enforcement requested")
       saveRuntimeState(lockEnabled: true, indefiniteUnlock: false, unlockUntilMs: 0)
       result(applySelectionShields(action: "startEnforcement"))
     }
@@ -235,6 +316,7 @@ final class ScreenTimeBridge: NSObject {
     }
 
     Task { @MainActor in
+      debugLog("stop enforcement requested")
       clearShieldSettings()
       result(operationPayload(success: true, action: "stopEnforcement", shielded: false))
     }
@@ -255,6 +337,9 @@ final class ScreenTimeBridge: NSObject {
         indefiniteUnlock: indefiniteUnlock,
         unlockUntilMs: unlockUntilMs
       )
+      debugLog(
+        "unlockFor requested; indefinite=\(indefiniteUnlock) unlockUntilMs=\(unlockUntilMs)"
+      )
       clearShieldSettings()
       result(operationPayload(success: true, action: "unlockFor", shielded: false))
     }
@@ -267,6 +352,7 @@ final class ScreenTimeBridge: NSObject {
     }
 
     Task { @MainActor in
+      debugLog("relockNow requested")
       saveRuntimeState(lockEnabled: true, indefiniteUnlock: false, unlockUntilMs: 0)
       result(applySelectionShields(action: "relockNow"))
     }
@@ -303,12 +389,16 @@ final class ScreenTimeBridge: NSObject {
     }
     return root
   }
+
+  private func debugLog(_ message: String) {
+    print("[screen-time][ios] \(message)")
+  }
 }
 
 @available(iOS 15.2, *)
 private extension ScreenTimeBridge {
   private var selectionStoreKey: String {
-    "ios.familyActivitySelection.v1"
+    familyActivitySelectionStoreKey
   }
 
   private var lockEnabledStoreKey: String {
@@ -398,6 +488,7 @@ private extension ScreenTimeBridge {
   func applySelectionShields(action: String) -> [String: Any] {
     guard familyAuthorizationStatusName() == "approved" else {
       clearShieldSettings()
+      debugLog("shield \(action) failed; authorization required")
       return operationPayload(
         success: false,
         action: action,
@@ -409,6 +500,7 @@ private extension ScreenTimeBridge {
     let selection = loadSelection()
     guard selectionTotalCount(selection) > 0 else {
       clearShieldSettings()
+      debugLog("shield \(action) no-op; empty selection")
       return operationPayload(
         success: true,
         action: action,
@@ -434,9 +526,12 @@ private extension ScreenTimeBridge {
           .specific(selection.categoryTokens)
       store.shield.webDomainCategories =
         ManagedSettings.ShieldSettings.ActivityCategoryPolicy<ManagedSettings.WebDomain>
-          .specific(selection.categoryTokens)
+        .specific(selection.categoryTokens)
     }
 
+    debugLog(
+      "shield \(action) applied; apps=\(selection.applicationTokens.count) categories=\(selection.categoryTokens.count) webDomains=\(selection.webDomainTokens.count)"
+    )
     return operationPayload(
       success: true,
       action: action,
@@ -451,6 +546,7 @@ private extension ScreenTimeBridge {
     store.shield.applicationCategories = nil
     store.shield.webDomains = nil
     store.shield.webDomainCategories = nil
+    debugLog("shield settings cleared")
   }
 
   @MainActor
@@ -464,8 +560,33 @@ private extension ScreenTimeBridge {
       selection: selection,
       errorMessage: errorMessage
     )
+    if let selection {
+      debugLog(
+        "picker finished; completed=\(completed) apps=\(selection.applicationTokens.count) categories=\(selection.categoryTokens.count) webDomains=\(selection.webDomainTokens.count)"
+      )
+    } else {
+      debugLog("picker finished; completed=\(completed)")
+    }
     let result = pendingPickerResult
     pendingPickerResult = nil
+
+    activeViewController()?.dismiss(animated: true) {
+      result?(payload)
+    }
+  }
+
+  @MainActor
+  func finishPreview(selection: FamilyActivitySelection) {
+    let payload = selectionPayload(
+      completed: true,
+      selection: selection,
+      errorMessage: nil
+    )
+    debugLog(
+      "selection preview dismissed; apps=\(selection.applicationTokens.count) categories=\(selection.categoryTokens.count) webDomains=\(selection.webDomainTokens.count)"
+    )
+    let result = pendingPreviewResult
+    pendingPreviewResult = nil
 
     activeViewController()?.dismiss(animated: true) {
       result?(payload)
@@ -559,5 +680,238 @@ private struct FamilyActivityPickerSheet: View {
           }
         }
     }
+  }
+}
+
+@available(iOS 15.2, *)
+private struct FamilyActivitySelectionPreviewSheet: View {
+  let selection: FamilyActivitySelection
+  let onDone: () -> Void
+
+  private var applicationTokens: [ApplicationToken] {
+    Array(selection.applicationTokens)
+  }
+
+  private var categoryTokens: [ActivityCategoryToken] {
+    Array(selection.categoryTokens)
+  }
+
+  private var webDomainTokens: [WebDomainToken] {
+    Array(selection.webDomainTokens)
+  }
+
+  var body: some View {
+    NavigationView {
+      List {
+        if !applicationTokens.isEmpty {
+          Section("Apps") {
+            ForEach(applicationTokens, id: \.self) { token in
+              Label(token)
+            }
+          }
+        }
+
+        if !categoryTokens.isEmpty {
+          Section("Categories") {
+            ForEach(categoryTokens, id: \.self) { token in
+              Label(token)
+            }
+            if selection.includeEntireCategory {
+              Text("Entire selected categories are restricted.")
+                .font(.footnote)
+                .foregroundColor(.secondary)
+            }
+          }
+        }
+
+        if !webDomainTokens.isEmpty {
+          Section("Web Domains") {
+            ForEach(webDomainTokens, id: \.self) { token in
+              Label(token)
+            }
+          }
+        }
+      }
+      .navigationTitle("Selected Apps")
+      .toolbar {
+        ToolbarItem(placement: .confirmationAction) {
+          Button("Done") {
+            onDone()
+          }
+        }
+      }
+    }
+  }
+}
+
+private final class ScreenTimeSelectionPreviewViewFactory: NSObject, FlutterPlatformViewFactory {
+  func create(withFrame frame: CGRect, viewIdentifier viewId: Int64, arguments args: Any?)
+    -> FlutterPlatformView
+  {
+    ScreenTimeSelectionPreviewPlatformView(
+      frame: frame,
+      viewId: viewId,
+      arguments: args
+    )
+  }
+
+  func createArgsCodec() -> FlutterMessageCodec & NSObjectProtocol {
+    FlutterStandardMessageCodec.sharedInstance()
+  }
+}
+
+private final class ScreenTimeSelectionPreviewPlatformView: NSObject, FlutterPlatformView {
+  private let containerView: UIView
+  private let hostingController: UIHostingController<FamilyActivityInlinePreview>
+
+  init(frame: CGRect, viewId: Int64, arguments: Any?) {
+    let selection = ScreenTimeSelectionPreviewPlatformView.loadSelection()
+    let expectedCount = ScreenTimeSelectionPreviewPlatformView.intValue(
+      from: (arguments as? [String: Any])?["expectedCount"]
+    )
+    let totalCount = selection.applicationTokens.count
+      + selection.categoryTokens.count
+      + selection.webDomainTokens.count
+
+    containerView = UIView(frame: frame)
+    hostingController = UIHostingController(
+      rootView: FamilyActivityInlinePreview(
+        selection: selection,
+        expectedCount: expectedCount
+      )
+    )
+
+    super.init()
+
+    containerView.backgroundColor = .clear
+    hostingController.view.backgroundColor = .clear
+    hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+    containerView.addSubview(hostingController.view)
+    NSLayoutConstraint.activate([
+      hostingController.view.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+      hostingController.view.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
+      hostingController.view.topAnchor.constraint(equalTo: containerView.topAnchor),
+      hostingController.view.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+    ])
+
+    print(
+      "[screen-time][ios] inline preview render started; viewId=\(viewId) apps=\(selection.applicationTokens.count) categories=\(selection.categoryTokens.count) webDomains=\(selection.webDomainTokens.count)"
+    )
+    if totalCount == 0 && expectedCount > 0 {
+      print("[screen-time][ios] inline preview fallback used; stored selection empty but Flutter expected \(expectedCount)")
+    }
+  }
+
+  func view() -> UIView {
+    containerView
+  }
+
+  private static func loadSelection() -> FamilyActivitySelection {
+    guard let data = UserDefaults.standard.data(forKey: familyActivitySelectionStoreKey),
+          let selection = try? JSONDecoder().decode(FamilyActivitySelection.self, from: data) else {
+      return FamilyActivitySelection()
+    }
+    return selection
+  }
+
+  private static func intValue(from value: Any?) -> Int {
+    if let number = value as? NSNumber {
+      return number.intValue
+    }
+    if let intValue = value as? Int {
+      return intValue
+    }
+    return 0
+  }
+}
+
+private struct FamilyActivityInlinePreview: View {
+  let selection: FamilyActivitySelection
+  let expectedCount: Int
+
+  private var applicationTokens: [ApplicationToken] {
+    Array(selection.applicationTokens)
+  }
+
+  private var categoryTokens: [ActivityCategoryToken] {
+    Array(selection.categoryTokens)
+  }
+
+  private var webDomainTokens: [WebDomainToken] {
+    Array(selection.webDomainTokens)
+  }
+
+  private var totalCount: Int {
+    applicationTokens.count + categoryTokens.count + webDomainTokens.count
+  }
+
+  var body: some View {
+    if totalCount == 0 {
+      InlinePreviewFallbackText(expectedCount: expectedCount)
+    } else {
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 7) {
+          ForEach(applicationTokens, id: \.self) { token in
+            InlinePreviewTokenCard {
+              Label(token)
+            }
+          }
+          ForEach(categoryTokens, id: \.self) { token in
+            InlinePreviewTokenCard {
+              Label(token)
+            }
+          }
+          ForEach(webDomainTokens, id: \.self) { token in
+            InlinePreviewTokenCard {
+              Label(token)
+            }
+          }
+        }
+        .padding(.vertical, 2)
+        .padding(.trailing, 2)
+      }
+    }
+  }
+}
+
+private struct InlinePreviewTokenCard<Content: View>: View {
+  let content: Content
+
+  init(@ViewBuilder content: () -> Content) {
+    self.content = content()
+  }
+
+  var body: some View {
+    content
+      .labelStyle(.iconOnly)
+      .imageScale(.large)
+      .frame(width: 42, height: 42)
+      .background(Color(UIColor.secondarySystemBackground))
+      .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(Color(UIColor.separator).opacity(0.35), lineWidth: 0.5)
+      )
+  }
+}
+
+private struct InlinePreviewFallbackText: View {
+  let expectedCount: Int
+
+  var body: some View {
+    Text(fallbackText)
+      .font(.subheadline.weight(.semibold))
+      .foregroundColor(.secondary)
+      .frame(maxWidth: .infinity, minHeight: 46, alignment: .leading)
+  }
+
+  private var fallbackText: String {
+    if expectedCount <= 0 {
+      return "No apps selected yet."
+    }
+    if expectedCount == 1 {
+      return "1 app selected"
+    }
+    return "\(expectedCount) selections saved"
   }
 }
