@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -12,8 +13,10 @@ import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Base64
+import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -21,6 +24,7 @@ import java.io.ByteArrayOutputStream
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "chesslock/system"
+    private val TAG = "ChessUnlockAppList"
     private val maxIconDimension = 192
     private val maxIconPngBytes = 512 * 1024
     private val notificationPermissionRequestCode = 4101
@@ -76,8 +80,8 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
 
-                "getLaunchableApps" -> {
-                    result.success(getLaunchableApps())
+                "getLaunchableApps" -> runAsyncResult(result, "getLaunchableApps") {
+                    getLaunchableApps()
                 }
 
                 "getLaunchableAppIcons" -> {
@@ -85,12 +89,34 @@ class MainActivity : FlutterActivity() {
                     val packageNames = (args?.get("packageNames") as? List<*>)
                         ?.mapNotNull { it?.toString()?.takeIf { pkg -> pkg.isNotBlank() } }
                         ?: emptyList()
-                    result.success(getLaunchableAppIcons(packageNames))
+                    runAsyncResult(result, "getLaunchableAppIcons") {
+                        getLaunchableAppIcons(packageNames)
+                    }
                 }
 
                 else -> result.notImplemented()
             }
         }
+    }
+
+    private fun runAsyncResult(
+        result: MethodChannel.Result,
+        label: String,
+        block: () -> Any
+    ) {
+        Thread {
+            try {
+                val value = block()
+                runOnUiThread {
+                    result.success(value)
+                }
+            } catch (t: Throwable) {
+                debugAppList("$label failed: ${t.message ?: t.javaClass.simpleName}")
+                runOnUiThread {
+                    result.error(label, t.message, null)
+                }
+            }
+        }.start()
     }
 
     private fun hasOverlayPermission(): Boolean {
@@ -176,6 +202,8 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun getLaunchableApps(): List<Map<String, Any>> {
+        val started = SystemClock.elapsedRealtime()
+        debugAppList("getLaunchableApps start")
         val pm = packageManager
         val intent = Intent(Intent.ACTION_MAIN, null)
         intent.addCategory(Intent.CATEGORY_LAUNCHER)
@@ -200,28 +228,25 @@ class MainActivity : FlutterActivity() {
                 pkg
             }
 
-            val iconB64 = try {
-                val d = ri.loadIcon(pm)
-                val png = drawableToPngBytes(d)
-                Base64.encodeToString(png, Base64.NO_WRAP)
-            } catch (_: Throwable) {
-                ""
-            }
-
             out.add(
                 mapOf(
                     "packageName" to pkg,
                     "appName" to label,
-                    "iconPngBase64" to iconB64
+                    "iconPngBase64" to ""
                 )
             )
         }
 
         out.sortBy { (it["appName"] as? String ?: "").lowercase() }
+        debugAppList(
+            "getLaunchableApps end count=${out.size} durationMs=${SystemClock.elapsedRealtime() - started}"
+        )
         return out
     }
 
     private fun getLaunchableAppIcons(packageNames: List<String>): List<Map<String, Any>> {
+        val started = SystemClock.elapsedRealtime()
+        debugAppList("getLaunchableAppIcons start count=${packageNames.size}")
         val pm = packageManager
         val out = ArrayList<Map<String, Any>>(packageNames.size)
 
@@ -258,7 +283,16 @@ class MainActivity : FlutterActivity() {
             )
         }
 
+        debugAppList(
+            "getLaunchableAppIcons end count=${out.size} durationMs=${SystemClock.elapsedRealtime() - started}"
+        )
         return out
+    }
+
+    private fun debugAppList(message: String) {
+        if ((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+            Log.d(TAG, message)
+        }
     }
 
     private fun drawableToPngBytes(drawable: Drawable): ByteArray {

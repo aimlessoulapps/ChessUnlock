@@ -138,42 +138,154 @@ class _MyAppState extends State<MyApp> {
 
   @override
   Widget build(BuildContext context) {
-    const accent = Color(0xFF2FE6A8);
-
-    final baseLight = ThemeData(
-      useMaterial3: true,
-      colorScheme:
-          ColorScheme.fromSeed(seedColor: accent, brightness: Brightness.light),
-    );
-
-    final baseDark = ThemeData(
-      useMaterial3: true,
-      colorScheme:
-          ColorScheme.fromSeed(seedColor: accent, brightness: Brightness.dark),
-    );
-
-    ThemeData polish(ThemeData t) {
-      final tt = _safeScaleTextTheme(t.textTheme, 0.94);
-      return t.copyWith(
-        textTheme: tt,
-        splashFactory: NoSplash.splashFactory,
-        highlightColor: Colors.transparent,
-      );
-    }
-
     return MaterialApp(
       title: "ChessUnlock",
       debugShowCheckedModeBanner: false,
-      theme: polish(baseLight),
-      darkTheme: polish(baseDark),
+      theme: _buildAppTheme(Brightness.light),
+      darkTheme: _buildAppTheme(Brightness.dark),
       themeMode: _themeMode,
-      home: ChessLockShell(
+      home: ChessUnlockShell(
         initialTab: widget.initialTab,
         themeMode: _mode,
         onThemeModeChanged: _setTheme,
       ),
     );
   }
+}
+
+ThemeData _buildAppTheme(Brightness brightness) {
+  final dark = brightness == Brightness.dark;
+  final scheme = ColorScheme(
+    brightness: brightness,
+    primary: dark ? const Color(0xFF43D66E) : const Color(0xFF16A34A),
+    onPrimary: dark ? const Color(0xFF06110A) : Colors.white,
+    secondary: dark ? const Color(0xFF74E59A) : const Color(0xFF22C55E),
+    onSecondary: dark ? const Color(0xFF06110A) : Colors.white,
+    error: dark ? const Color(0xFFFFB4AB) : const Color(0xFFBA1A1A),
+    onError: dark ? const Color(0xFF690005) : Colors.white,
+    surface: dark ? const Color(0xFF0B0F0D) : const Color(0xFFF7FAF8),
+    onSurface: dark ? const Color(0xFFF4F7F5) : const Color(0xFF101513),
+    surfaceContainerLowest:
+        dark ? const Color(0xFF080B09) : const Color(0xFFFFFFFF),
+    surfaceContainerLow:
+        dark ? const Color(0xFF101411) : const Color(0xFFFFFFFF),
+    surfaceContainer: dark ? const Color(0xFF151A17) : const Color(0xFFFFFFFF),
+    surfaceContainerHigh:
+        dark ? const Color(0xFF171D19) : const Color(0xFFF0F6F2),
+    surfaceContainerHighest:
+        dark ? const Color(0xFF1E2420) : const Color(0xFFEEF5F0),
+    onSurfaceVariant: dark ? const Color(0xFF8F9B94) : const Color(0xFF647067),
+    outline: dark ? const Color(0xFF536157) : const Color(0xFFB8C3BA),
+    outlineVariant: dark ? const Color(0xFF27342C) : const Color(0xFFD7E2D9),
+    inverseSurface: dark ? const Color(0xFFF4F7F5) : const Color(0xFF1B1F1C),
+    onInverseSurface: dark ? const Color(0xFF101513) : const Color(0xFFF4F7F5),
+    inversePrimary: dark ? const Color(0xFF16A34A) : const Color(0xFF43D66E),
+    shadow: Colors.black,
+    scrim: Colors.black,
+  );
+  final base = ThemeData(
+    useMaterial3: true,
+    brightness: brightness,
+    colorScheme: scheme,
+    scaffoldBackgroundColor: scheme.surface,
+  );
+  final textTheme = _safeScaleTextTheme(base.textTheme, 0.94).apply(
+    bodyColor: scheme.onSurface,
+    displayColor: scheme.onSurface,
+  );
+  return base.copyWith(
+    textTheme: textTheme,
+    splashFactory: NoSplash.splashFactory,
+    highlightColor: Colors.transparent,
+    appBarTheme: AppBarTheme(
+      backgroundColor: scheme.surface,
+      foregroundColor: scheme.onSurface,
+      elevation: 0,
+      centerTitle: false,
+      titleTextStyle: textTheme.titleLarge?.copyWith(
+        color: scheme.onSurface,
+        fontWeight: FontWeight.w800,
+      ),
+    ),
+    bottomSheetTheme: BottomSheetThemeData(
+      backgroundColor: scheme.surface,
+      surfaceTintColor: Colors.transparent,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+    ),
+    dialogTheme: DialogThemeData(
+      backgroundColor: scheme.surfaceContainer,
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      backgroundColor: dark ? scheme.surfaceContainerHighest : scheme.onSurface,
+      contentTextStyle: TextStyle(
+        color: dark ? scheme.onSurface : scheme.surface,
+        fontWeight: FontWeight.w600,
+      ),
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        backgroundColor: scheme.primary,
+        foregroundColor: scheme.onPrimary,
+        disabledBackgroundColor: scheme.surfaceContainerHighest,
+        disabledForegroundColor: scheme.onSurfaceVariant.withOpacity(0.65),
+        elevation: 0,
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        textStyle: const TextStyle(fontWeight: FontWeight.w800),
+      ),
+    ),
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(
+        foregroundColor: scheme.primary,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        textStyle: const TextStyle(fontWeight: FontWeight.w800),
+      ),
+    ),
+    navigationBarTheme: NavigationBarThemeData(
+      indicatorColor: scheme.primary.withOpacity(dark ? 0.18 : 0.12),
+      iconTheme: WidgetStateProperty.resolveWith(
+        (states) => IconThemeData(
+          color: states.contains(WidgetState.selected)
+              ? scheme.primary
+              : scheme.onSurfaceVariant,
+        ),
+      ),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: scheme.surfaceContainerHighest.withOpacity(dark ? 0.45 : 0.7),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(18),
+        borderSide: BorderSide(color: scheme.outlineVariant.withOpacity(0.7)),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(18),
+        borderSide: BorderSide(color: scheme.outlineVariant.withOpacity(0.7)),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(18),
+        borderSide: BorderSide(color: scheme.primary.withOpacity(0.85)),
+      ),
+    ),
+    switchTheme: SwitchThemeData(
+      thumbColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.selected)
+            ? scheme.onPrimary
+            : scheme.onSurfaceVariant,
+      ),
+      trackColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.selected)
+            ? scheme.primary
+            : scheme.surfaceContainerHighest,
+      ),
+    ),
+  );
 }
 
 TextTheme _safeScaleTextTheme(TextTheme t, double factor) {
@@ -204,15 +316,15 @@ TextTheme _safeScaleTextTheme(TextTheme t, double factor) {
 }
 
 ///
-/// ChessLockShell = app logic + state + platform calls
+/// ChessUnlockShell = app logic + state + platform calls
 /// UI widgets live in ui.dart
 ///
-class ChessLockShell extends StatefulWidget {
+class ChessUnlockShell extends StatefulWidget {
   final int initialTab;
   final AppThemeMode themeMode;
   final Future<void> Function(AppThemeMode mode) onThemeModeChanged;
 
-  const ChessLockShell({
+  const ChessUnlockShell({
     super.key,
     this.initialTab = 0,
     required this.themeMode,
@@ -220,10 +332,10 @@ class ChessLockShell extends StatefulWidget {
   });
 
   @override
-  State<ChessLockShell> createState() => _ChessLockShellState();
+  State<ChessUnlockShell> createState() => _ChessUnlockShellState();
 }
 
-class _ChessLockShellState extends State<ChessLockShell>
+class _ChessUnlockShellState extends State<ChessUnlockShell>
     with WidgetsBindingObserver {
   late final Future<SharedPreferences> _prefsFuture =
       SharedPreferences.getInstance();
@@ -307,7 +419,9 @@ class _ChessLockShellState extends State<ChessLockShell>
   // Shared prefs keys
   static const _kDifficulty = "puzzleDifficulty";
   static const _kOnboardingComplete = "onboardingComplete";
+  static const _kOnboardingAnswers = "onboardingAnswers.v1";
   static const _kLockedAppIconCache = "lockedAppIconCache.v1";
+  static const Duration _kLaunchableAppsCacheTtl = Duration(minutes: 10);
 
   bool _onboardingDialogQueued = false;
 
@@ -367,6 +481,10 @@ class _ChessLockShellState extends State<ChessLockShell>
   Future<void>? _lockedIconCacheLoadFuture;
   bool _lockedIconPrefetchScheduled = false;
   bool _lockedIconPrefetchInFlight = false;
+  List<Map<String, dynamic>>? _launchableAppsCache;
+  DateTime? _launchableAppsCacheAt;
+  Future<List<Map<String, dynamic>>>? _launchableAppsLoadFuture;
+  bool _launchableAppsPrefetchScheduled = false;
 
   // =========================
   // ✅ NEW: local queues per difficulty
@@ -394,6 +512,7 @@ class _ChessLockShellState extends State<ChessLockShell>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _preloadRewardedAd();
+      _scheduleLaunchableAppsPrefetch(reason: "startup");
     });
 
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -445,6 +564,7 @@ class _ChessLockShellState extends State<ChessLockShell>
     if (state == AppLifecycleState.resumed) {
       unawaited(_ensureAppLockReadyIfNeeded());
       unawaited(_openPuzzleFromOverlayRequestIfNeeded());
+      _scheduleLaunchableAppsPrefetch(reason: "app_resumed");
     }
   }
 
@@ -482,13 +602,39 @@ class _ChessLockShellState extends State<ChessLockShell>
     _onboardingDialogQueued = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      unawaited(_showFirstLaunchOnboardingDialog());
+      unawaited(_showFirstLaunchOnboardingFlow());
     });
   }
 
   Future<void> _completeOnboarding() async {
     final prefs = await _prefsFuture;
     await prefs.setBool(_kOnboardingComplete, true);
+  }
+
+  Future<void> _saveOnboardingAnswer(String key, String answer) async {
+    final prefs = await _prefsFuture;
+    final raw = prefs.getString(_kOnboardingAnswers);
+    final answers = <String, String>{};
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) {
+          for (final entry in decoded.entries) {
+            answers[entry.key.toString()] = entry.value.toString();
+          }
+        }
+      } catch (_) {}
+    }
+
+    answers[key] = answer;
+    await prefs.setString(_kOnboardingAnswers, jsonEncode(answers));
+
+    if (key == "source" ||
+        key == "distraction" ||
+        key == "goal" ||
+        key == "strictness") {
+      AppAnalytics.onboardingAnswer(question: key, answer: answer);
+    }
   }
 
   Future<NativeAppSelectionResult?> _refreshAppLockSelectionSummary({
@@ -520,7 +666,7 @@ class _ChessLockShellState extends State<ChessLockShell>
         a.includeEntireCategory == b.includeEntireCategory;
   }
 
-  Future<void> _showFirstLaunchOnboardingDialog() async {
+  Future<void> _showFirstLaunchOnboardingFlow() async {
     if (!mounted) return;
 
     if (_hasAnyLockedSelection) {
@@ -529,39 +675,33 @@ class _ChessLockShellState extends State<ChessLockShell>
     }
 
     AppAnalytics.onboardingScreenViewed();
-    final chooseApps = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text("Welcome to ChessLock"),
-        content: const Text(
-          "Pick any distracting apps you want to lock.\n"
-          "You will need solve chess puzzle to use those apps.",
+    AppAnalytics.onboardingStarted();
+    final chooseApps = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => OnboardingFlow(
+          onAnswerSelected: _saveOnboardingAnswer,
+          onPermissionContinue: _runOnboardingPermissionSetup,
         ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              AppAnalytics.onboardingLaterButtonTapped();
-              Navigator.pop(ctx, false);
-            },
-            child: const Text("Later"),
-          ),
-          FilledButton(
-            onPressed: () {
-              AppAnalytics.onboardingChooseAppsButtonTapped();
-              Navigator.pop(ctx, true);
-            },
-            child: const Text("Choose Apps"),
-          ),
-        ],
       ),
     );
 
-    await _completeOnboarding();
-    if (!mounted) return;
+    if (!mounted || chooseApps != true) return;
 
-    if (chooseApps == true) {
-      await _openAppPicker(requireSolved: false);
+    AppAnalytics.onboardingChooseAppsButtonTapped();
+    await _completeOnboarding();
+    AppAnalytics.onboardingCompleted();
+    if (!mounted) return;
+    await _openAppPicker(requireSolved: false);
+  }
+
+  Future<void> _runOnboardingPermissionSetup() async {
+    if (!_appLock.isSupported) {
+      _snack(_appLock.unsupportedMessage);
+      return;
     }
+
+    await _appLock.requestInitialPermissionSetup();
   }
 
   bool get _isUnlocked => _lockState.isUnlocked;
@@ -629,8 +769,123 @@ class _ChessLockShellState extends State<ChessLockShell>
   // =========================
   // Launchable apps + icons
   // =========================
-  Future<List<Map<String, dynamic>>> _getLaunchableAppsRaw() =>
-      _appLock.getLockableApps();
+  bool get _shouldCacheLaunchableApps =>
+      !kIsWeb &&
+      defaultTargetPlatform == TargetPlatform.android &&
+      _appLock.isSupported &&
+      !_appLock.usesNativeAppPicker;
+
+  Future<List<Map<String, dynamic>>> _getLaunchableAppsRaw() {
+    return _getLaunchableAppsCached(reason: "picker_open");
+  }
+
+  bool get _hasFreshLaunchableAppsCache {
+    final cachedAt = _launchableAppsCacheAt;
+    return _launchableAppsCache != null &&
+        cachedAt != null &&
+        DateTime.now().difference(cachedAt) < _kLaunchableAppsCacheTtl;
+  }
+
+  Future<List<Map<String, dynamic>>> _getLaunchableAppsCached({
+    required String reason,
+    bool forceRefresh = false,
+  }) async {
+    if (!_shouldCacheLaunchableApps) {
+      return _appLock.getLockableApps();
+    }
+
+    final cached = _launchableAppsCache;
+    if (!forceRefresh && cached != null) {
+      final fresh = _hasFreshLaunchableAppsCache;
+      _debugAppList(
+        "cache ${fresh ? "hit" : "stale_hit"}; "
+        "reason=$reason count=${cached.length}",
+      );
+      if (!fresh) {
+        _scheduleLaunchableAppsPrefetch(reason: "stale_$reason");
+      }
+      return _copyLaunchableApps(cached);
+    }
+
+    final inFlight = _launchableAppsLoadFuture;
+    if (inFlight != null) {
+      _debugAppList("join in-flight request; reason=$reason");
+      final apps = await inFlight;
+      return _copyLaunchableApps(apps);
+    }
+
+    final stopwatch = Stopwatch()..start();
+    _debugAppList(
+      "cache miss; reason=$reason forceRefresh=$forceRefresh",
+    );
+
+    final future = _loadLaunchableAppsFromPlatform(reason: reason);
+    _launchableAppsLoadFuture = future;
+    try {
+      final apps = await future;
+      _launchableAppsCache = _copyLaunchableApps(apps);
+      _launchableAppsCacheAt = DateTime.now();
+      _debugAppList(
+        "cache stored; reason=$reason count=${apps.length} "
+        "durationMs=${stopwatch.elapsedMilliseconds}",
+      );
+      return _copyLaunchableApps(apps);
+    } finally {
+      if (identical(_launchableAppsLoadFuture, future)) {
+        _launchableAppsLoadFuture = null;
+      }
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _loadLaunchableAppsFromPlatform({
+    required String reason,
+  }) async {
+    final stopwatch = Stopwatch()..start();
+    _debugAppList("platform request start; reason=$reason");
+    final apps = await _appLock.getLockableApps();
+    _debugAppList(
+      "platform request end; reason=$reason count=${apps.length} "
+      "durationMs=${stopwatch.elapsedMilliseconds}",
+    );
+    return apps;
+  }
+
+  void _scheduleLaunchableAppsPrefetch({required String reason}) {
+    if (!_shouldCacheLaunchableApps ||
+        _launchableAppsPrefetchScheduled ||
+        _launchableAppsLoadFuture != null ||
+        _hasFreshLaunchableAppsCache) {
+      return;
+    }
+
+    _launchableAppsPrefetchScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _launchableAppsPrefetchScheduled = false;
+      if (!mounted || !_shouldCacheLaunchableApps) return;
+      unawaited(
+        _getLaunchableAppsCached(
+          reason: "prefetch_$reason",
+          forceRefresh: true,
+        ).catchError((Object error, StackTrace stackTrace) {
+          _debugAppList("prefetch failed; reason=$reason error=$error");
+          return <Map<String, dynamic>>[];
+        }),
+      );
+    });
+  }
+
+  List<Map<String, dynamic>> _copyLaunchableApps(
+    List<Map<String, dynamic>> apps,
+  ) {
+    return [
+      for (final app in apps) Map<String, dynamic>.from(app),
+    ];
+  }
+
+  void _debugAppList(String message) {
+    if (!kDebugMode) return;
+    debugPrint("[app-list] $message");
+  }
 
   Future<List<Map<String, dynamic>>> _getLockedAppIconsRaw(
     Set<String> packages,
@@ -1439,6 +1694,7 @@ class _ChessLockShellState extends State<ChessLockShell>
       _puzzleSolvedChoiceShown = true;
       _extraPuzzleMode = false;
       _goHome();
+      _scheduleLaunchableAppsPrefetch(reason: "edit_puzzle_solved");
       _snack("Puzzle solved. You can edit locked apps now.");
       return;
     }
@@ -2633,6 +2889,8 @@ class _ChessLockShellState extends State<ChessLockShell>
       return;
     }
 
+    _scheduleLaunchableAppsPrefetch(reason: "before_picker");
+
     final selected = await _sanitizeLockedPackages(_lockedPackages);
     if (!mounted) return;
 
@@ -2643,6 +2901,7 @@ class _ChessLockShellState extends State<ChessLockShell>
           selected: selected,
           editingDisabled: false,
           fetchApps: _getLaunchableAppsRaw,
+          fetchIcons: _getLockedAppIconsRaw,
         ),
       ),
     );

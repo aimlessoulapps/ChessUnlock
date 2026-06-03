@@ -22,7 +22,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="14dp"
         android:gravity="center"
-        android:text="Solve in ChessLock to continue"
+        android:text="Solve in ChessUnlock to continue"
         android:textColor="#DDDDDD"
         android:textSize="16sp" />
 

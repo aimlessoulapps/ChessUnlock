@@ -23,6 +23,7 @@ void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({
       'themeMode': 'system',
+      'onboardingComplete': true,
       'puzzleDifficulty': 'normal',
       'lockedPackages': <String>[],
       'indefUnlock': false,

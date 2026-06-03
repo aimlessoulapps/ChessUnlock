@@ -119,6 +119,8 @@ abstract class AppLockService {
   }) async =>
       const AppLockPermissionStatus(AppLockPermissionIssue.unsupported);
 
+  Future<void> requestInitialPermissionSetup() async {}
+
   Future<void> openUsageAccessSettings() async {}
 
   Future<void> openOverlaySettings() async {}
@@ -283,6 +285,19 @@ class AndroidAppLockService extends AppLockService {
   }
 
   @override
+  Future<void> requestInitialPermissionSetup() async {
+    try {
+      if (!await _hasUsageAccess()) {
+        await openUsageAccessSettings();
+        return;
+      }
+      if (!await _hasOverlayPermission()) {
+        await openOverlaySettings();
+      }
+    } catch (_) {}
+  }
+
+  @override
   Future<void> requestNotificationPermissionIfNeeded() async {
     try {
       final granted = await _hasNotificationPermission();
@@ -347,6 +362,16 @@ class IosScreenTimeAppLockService extends AppLockService {
     return const AppLockPermissionStatus(
       AppLockPermissionIssue.screenTimeAuthorizationRequired,
     );
+  }
+
+  @override
+  Future<void> requestInitialPermissionSetup() async {
+    final available = await _isScreenTimeAvailable();
+    if (!available) return;
+
+    try {
+      await _invokeMap("requestAuthorization");
+    } catch (_) {}
   }
 
   @override

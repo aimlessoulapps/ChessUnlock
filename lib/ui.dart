@@ -486,6 +486,504 @@ class _BannerAdSlotState extends State<BannerAdSlot>
 // =========================
 // HOME TAB
 // =========================
+typedef OnboardingAnswerSelected = Future<void> Function(
+  String key,
+  String answer,
+);
+
+class OnboardingFlow extends StatefulWidget {
+  final OnboardingAnswerSelected onAnswerSelected;
+  final Future<void> Function() onPermissionContinue;
+
+  const OnboardingFlow({
+    super.key,
+    required this.onAnswerSelected,
+    required this.onPermissionContinue,
+  });
+
+  @override
+  State<OnboardingFlow> createState() => _OnboardingFlowState();
+}
+
+class _OnboardingFlowState extends State<OnboardingFlow> {
+  final PageController _pageController = PageController();
+  final Map<String, String> _answers = {};
+  int _page = 0;
+  bool _busy = false;
+
+  static const _pages = 8;
+
+  bool get _isQuestionPage => _questionKeyForPage(_page) != null;
+
+  bool get _canContinue {
+    final key = _questionKeyForPage(_page);
+    return key == null || _answers.containsKey(key);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _next() async {
+    if (_busy || !_canContinue) return;
+
+    if (_page == 6) {
+      setState(() => _busy = true);
+      await widget.onPermissionContinue();
+      if (!mounted) return;
+      setState(() => _busy = false);
+    }
+
+    if (_page == _pages - 1) {
+      Navigator.pop(context, true);
+      return;
+    }
+
+    await _pageController.animateToPage(
+      _page + 1,
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  Future<void> _back() async {
+    if (_busy || _page == 0) return;
+    await _pageController.animateToPage(
+      _page - 1,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  Future<void> _selectAnswer(String key, String answer) async {
+    setState(() => _answers[key] = answer);
+    await widget.onAnswerSelected(key, answer);
+  }
+
+  String? _questionKeyForPage(int page) {
+    return switch (page) {
+      1 => "source",
+      2 => "distraction",
+      3 => "goal",
+      4 => "strictness",
+      _ => null,
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const bg = Color(0xFF0B0F0D);
+    const card = Color(0xFF151A17);
+    const secondaryCard = Color(0xFF1E2420);
+    const green = Color(0xFF43D66E);
+    const text = Color(0xFFF4F7F5);
+    const muted = Color(0xFF8F9B94);
+
+    return PopScope(
+      canPop: false,
+      child: Scaffold(
+        backgroundColor: bg,
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 18),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    if (_page > 0)
+                      IconButton(
+                        onPressed: _busy ? null : _back,
+                        icon: const Icon(Icons.arrow_back_rounded),
+                        color: text,
+                        tooltip: "Back",
+                      )
+                    else
+                      const SizedBox(width: 48, height: 48),
+                    Expanded(
+                      child: _OnboardingProgress(
+                        page: _page,
+                        pages: _pages,
+                        color: green,
+                        trackColor: secondaryCard,
+                      ),
+                    ),
+                    const SizedBox(width: 48, height: 48),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Expanded(
+                  child: PageView(
+                    controller: _pageController,
+                    physics: const NeverScrollableScrollPhysics(),
+                    onPageChanged: (page) => setState(() => _page = page),
+                    children: [
+                      _OnboardingCopyPage(
+                        icon: Icons.lock_open_rounded,
+                        title: "Welcome to ChessUnlock",
+                        body:
+                            "Turn distractions into chess progress. Lock distracting apps and unlock them by solving a puzzle.",
+                        textColor: text,
+                        mutedColor: muted,
+                        accentColor: green,
+                      ),
+                      _QuestionPage(
+                        question: "Where did you hear about ChessUnlock?",
+                        options: const [
+                          "App Store / Play Store",
+                          "YouTube",
+                          "Instagram",
+                          "Reddit",
+                          "Friend",
+                          "Search",
+                          "Other",
+                        ],
+                        selected: _answers["source"],
+                        onSelected: (answer) => _selectAnswer("source", answer),
+                        textColor: text,
+                        mutedColor: muted,
+                        cardColor: card,
+                        selectedColor: green,
+                      ),
+                      _QuestionPage(
+                        question: "What pulls your attention most often?",
+                        options: const [
+                          "Instagram",
+                          "YouTube",
+                          "Reddit",
+                          "Discord",
+                          "Games",
+                          "Messaging",
+                          "Short videos",
+                          "Other",
+                        ],
+                        selected: _answers["distraction"],
+                        onSelected: (answer) =>
+                            _selectAnswer("distraction", answer),
+                        textColor: text,
+                        mutedColor: muted,
+                        cardColor: card,
+                        selectedColor: green,
+                      ),
+                      _QuestionPage(
+                        question: "What is your main goal?",
+                        options: const [
+                          "Reduce screen time",
+                          "Improve chess",
+                          "Improve focus",
+                          "Build discipline",
+                          "Study or work better",
+                          "Stop automatic scrolling",
+                        ],
+                        selected: _answers["goal"],
+                        onSelected: (answer) => _selectAnswer("goal", answer),
+                        textColor: text,
+                        mutedColor: muted,
+                        cardColor: card,
+                        selectedColor: green,
+                      ),
+                      _QuestionPage(
+                        question: "How strict should ChessUnlock feel?",
+                        options: const [
+                          "Gentle",
+                          "Balanced",
+                          "Strict",
+                        ],
+                        selected: _answers["strictness"],
+                        onSelected: (answer) =>
+                            _selectAnswer("strictness", answer),
+                        textColor: text,
+                        mutedColor: muted,
+                        cardColor: card,
+                        selectedColor: green,
+                      ),
+                      _OnboardingCopyPage(
+                        icon: Icons.psychology_alt_rounded,
+                        title: "Small puzzles. Real progress.",
+                        body:
+                            "Solving chess puzzles consistently can build pattern recognition, calculation, and better decision-making. ChessUnlock helps turn every distraction into a small chess habit.",
+                        textColor: text,
+                        mutedColor: muted,
+                        accentColor: green,
+                      ),
+                      _OnboardingCopyPage(
+                        icon: defaultTargetPlatform == TargetPlatform.iOS
+                            ? Icons.ios_share_rounded
+                            : Icons.security_rounded,
+                        title: defaultTargetPlatform == TargetPlatform.iOS
+                            ? "Enable Screen Time Access"
+                            : "Enable App Lock Permissions",
+                        body: defaultTargetPlatform == TargetPlatform.iOS
+                            ? "ChessUnlock uses Screen Time permission to lock the apps you choose. Your selected apps stay private on your device."
+                            : "ChessUnlock needs Usage Access and overlay permission to detect locked apps and show the puzzle screen when you open them.",
+                        textColor: text,
+                        mutedColor: muted,
+                        accentColor: green,
+                      ),
+                      _OnboardingCopyPage(
+                        icon: Icons.check_circle_rounded,
+                        title: "You're ready.",
+                        body:
+                            "Now choose the apps you want ChessUnlock to protect. First-time setup does not require solving a puzzle.",
+                        textColor: text,
+                        mutedColor: muted,
+                        accentColor: green,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                FilledButton(
+                  onPressed: _busy || (_isQuestionPage && !_canContinue)
+                      ? null
+                      : _next,
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(double.infinity, 56),
+                    backgroundColor: green,
+                    foregroundColor: const Color(0xFF06110A),
+                    disabledBackgroundColor: secondaryCard,
+                    disabledForegroundColor: muted,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(22),
+                    ),
+                  ),
+                  child: _busy
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.4,
+                            color: Color(0xFF06110A),
+                          ),
+                        )
+                      : Text(
+                          switch (_page) {
+                            0 => "Get started",
+                            6 => "Continue",
+                            7 => "Choose apps",
+                            _ => "Continue",
+                          },
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _OnboardingProgress extends StatelessWidget {
+  final int page;
+  final int pages;
+  final Color color;
+  final Color trackColor;
+
+  const _OnboardingProgress({
+    required this.page,
+    required this.pages,
+    required this.color,
+    required this.trackColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        for (var i = 0; i < pages; i++)
+          Expanded(
+            child: Container(
+              height: 4,
+              margin: EdgeInsets.only(right: i == pages - 1 ? 0 : 6),
+              decoration: BoxDecoration(
+                color: i <= page ? color : trackColor,
+                borderRadius: BorderRadius.circular(999),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _OnboardingCopyPage extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String body;
+  final Color textColor;
+  final Color mutedColor;
+  final Color accentColor;
+
+  const _OnboardingCopyPage({
+    required this.icon,
+    required this.title,
+    required this.body,
+    required this.textColor,
+    required this.mutedColor,
+    required this.accentColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(vertical: 24),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 74,
+                height: 74,
+                decoration: BoxDecoration(
+                  color: accentColor.withOpacity(0.14),
+                  borderRadius: BorderRadius.circular(26),
+                  border: Border.all(color: accentColor.withOpacity(0.28)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: accentColor.withOpacity(0.16),
+                      blurRadius: 34,
+                      offset: const Offset(0, 18),
+                    ),
+                  ],
+                ),
+                child: Icon(icon, color: accentColor, size: 34),
+              ),
+              const SizedBox(height: 28),
+              Text(
+                title,
+                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                      color: textColor,
+                      fontWeight: FontWeight.w900,
+                    ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 14),
+              Text(
+                body,
+                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                      color: mutedColor,
+                      height: 1.45,
+                      fontWeight: FontWeight.w600,
+                    ),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _QuestionPage extends StatelessWidget {
+  final String question;
+  final List<String> options;
+  final String? selected;
+  final ValueChanged<String> onSelected;
+  final Color textColor;
+  final Color mutedColor;
+  final Color cardColor;
+  final Color selectedColor;
+
+  const _QuestionPage({
+    required this.question,
+    required this.options,
+    required this.selected,
+    required this.onSelected,
+    required this.textColor,
+    required this.mutedColor,
+    required this.cardColor,
+    required this.selectedColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(vertical: 24),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                question,
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      color: textColor,
+                      fontWeight: FontWeight.w900,
+                    ),
+              ),
+              const SizedBox(height: 22),
+              ...options.map((option) {
+                final isSelected = selected == option;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: InkWell(
+                    onTap: () => onSelected(option),
+                    borderRadius: BorderRadius.circular(20),
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 15,
+                      ),
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? selectedColor.withOpacity(0.14)
+                            : cardColor,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: isSelected
+                              ? selectedColor.withOpacity(0.8)
+                              : Colors.white.withOpacity(0.08),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.22),
+                            blurRadius: 20,
+                            offset: const Offset(0, 10),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              option,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleSmall
+                                  ?.copyWith(
+                                    color: textColor,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                            ),
+                          ),
+                          Icon(
+                            isSelected
+                                ? Icons.check_circle_rounded
+                                : Icons.radio_button_unchecked_rounded,
+                            color: isSelected ? selectedColor : mutedColor,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              }),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class HomeTab extends StatelessWidget {
   final bool active;
   final bool lockEnabled;
@@ -1616,6 +2114,9 @@ class SettingsTab extends StatelessWidget {
 // App picker
 // =========================
 typedef FetchLaunchableApps = Future<List<Map<String, dynamic>>> Function();
+typedef FetchLaunchableAppIcons = Future<List<Map<String, dynamic>>> Function(
+  Set<String> packageNames,
+);
 
 class LaunchableApp {
   final String packageName;
@@ -1627,18 +2128,30 @@ class LaunchableApp {
     required this.appName,
     required this.iconBytes,
   });
+
+  LaunchableApp copyWith({
+    Uint8List? iconBytes,
+  }) {
+    return LaunchableApp(
+      packageName: packageName,
+      appName: appName,
+      iconBytes: iconBytes ?? this.iconBytes,
+    );
+  }
 }
 
 class AppSelectionPage extends StatefulWidget {
   final Set<String> selected;
   final bool editingDisabled;
   final FetchLaunchableApps fetchApps;
+  final FetchLaunchableAppIcons? fetchIcons;
 
   const AppSelectionPage({
     super.key,
     required this.selected,
     required this.editingDisabled,
     required this.fetchApps,
+    this.fetchIcons,
   });
 
   @override
@@ -1654,31 +2167,27 @@ class _AppSelectionPageState extends State<AppSelectionPage> {
   final TextEditingController _searchCtrl = TextEditingController();
   List<LaunchableApp> _apps = [];
   List<LaunchableApp> _filtered = [];
+  int _iconDecodeGeneration = 0;
 
   @override
   void initState() {
     super.initState();
     _selected = {...widget.selected};
-    _loadApps();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(_loadApps());
+    });
 
     _searchCtrl.addListener(() {
-      final q = _searchCtrl.text.trim().toLowerCase();
       setState(() {
-        if (q.isEmpty) {
-          _filtered = _apps;
-        } else {
-          _filtered = _apps
-              .where((a) =>
-                  a.appName.toLowerCase().contains(q) ||
-                  a.packageName.toLowerCase().contains(q))
-              .toList();
-        }
+        _applyCurrentFilter();
       });
     });
   }
 
   @override
   void dispose() {
+    _iconDecodeGeneration++;
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -1691,30 +2200,53 @@ class _AppSelectionPageState extends State<AppSelectionPage> {
       _error = null;
     });
 
+    final totalStopwatch = Stopwatch()..start();
+    final fetchStopwatch = Stopwatch()..start();
+    _debugAppPicker("load start");
+
     try {
       final raw = await widget.fetchApps();
+      fetchStopwatch.stop();
       if (!mounted) return;
 
+      final iconBase64ByPkg = <String, String>{};
       final list = raw
           .map((m) {
             final pkg = (m["packageName"] ?? "").toString();
             final name = (m["appName"] ?? "").toString();
             final b64 = (m["iconPngBase64"] ?? "").toString();
-            final bytes = decodeIconPngBase64(b64);
+            if (pkg.isNotEmpty && b64.isNotEmpty) {
+              iconBase64ByPkg[pkg] = b64;
+            }
             return LaunchableApp(
               packageName: pkg,
               appName: name,
-              iconBytes: bytes,
+              iconBytes: null,
             );
           })
           .where((a) => a.packageName.isNotEmpty)
           .toList();
 
+      _iconDecodeGeneration++;
+      final generation = _iconDecodeGeneration;
       setState(() {
         _apps = list;
-        _filtered = list;
+        _applyCurrentFilter();
         _loading = false;
       });
+      _debugAppPicker(
+        "rows visible; count=${list.length} "
+        "fetchMs=${fetchStopwatch.elapsedMilliseconds} "
+        "totalMs=${totalStopwatch.elapsedMilliseconds}",
+      );
+
+      unawaited(
+        _loadIconsAfterRowsVisible(
+          packages: [for (final app in list) app.packageName],
+          fallbackIconBase64ByPkg: iconBase64ByPkg,
+          generation: generation,
+        ),
+      );
     } catch (e) {
       if (!mounted) return;
 
@@ -1722,7 +2254,144 @@ class _AppSelectionPageState extends State<AppSelectionPage> {
         _error = "Failed to load apps: $e";
         _loading = false;
       });
+      _debugAppPicker(
+        "load failed; fetchMs=${fetchStopwatch.elapsedMilliseconds} error=$e",
+      );
     }
+  }
+
+  void _applyCurrentFilter() {
+    final q = _searchCtrl.text.trim().toLowerCase();
+    if (q.isEmpty) {
+      _filtered = _apps;
+      return;
+    }
+
+    _filtered = _apps
+        .where((a) =>
+            a.appName.toLowerCase().contains(q) ||
+            a.packageName.toLowerCase().contains(q))
+        .toList();
+  }
+
+  Future<void> _decodeIconsProgressively(
+    Map<String, String> iconBase64ByPkg, {
+    required int generation,
+  }) async {
+    if (iconBase64ByPkg.isEmpty) return;
+
+    final stopwatch = Stopwatch()..start();
+    const batchSize = 10;
+    var decodedInBatch = <String, Uint8List>{};
+    var processed = 0;
+
+    for (final entry in iconBase64ByPkg.entries) {
+      if (!mounted || generation != _iconDecodeGeneration) return;
+
+      final bytes = decodeIconPngBase64(entry.value);
+      if (bytes != null) {
+        decodedInBatch[entry.key] = bytes;
+      }
+      processed++;
+
+      if (processed % batchSize == 0) {
+        _applyDecodedIcons(decodedInBatch, generation: generation);
+        decodedInBatch = <String, Uint8List>{};
+        await Future<void>.delayed(Duration.zero);
+      }
+    }
+
+    _applyDecodedIcons(decodedInBatch, generation: generation);
+    _debugAppPicker(
+      "icons decoded; requested=${iconBase64ByPkg.length} "
+      "durationMs=${stopwatch.elapsedMilliseconds}",
+    );
+  }
+
+  Future<void> _loadIconsAfterRowsVisible({
+    required List<String> packages,
+    required Map<String, String> fallbackIconBase64ByPkg,
+    required int generation,
+  }) async {
+    final fetchIcons = widget.fetchIcons;
+    if (fetchIcons == null) {
+      await _decodeIconsProgressively(
+        fallbackIconBase64ByPkg,
+        generation: generation,
+      );
+      return;
+    }
+
+    if (packages.isEmpty) return;
+
+    final stopwatch = Stopwatch()..start();
+    const batchSize = 30;
+    var loaded = 0;
+    _debugAppPicker("icon fetch start; packages=${packages.length}");
+
+    for (var start = 0; start < packages.length; start += batchSize) {
+      if (!mounted || generation != _iconDecodeGeneration) return;
+
+      final end = min(start + batchSize, packages.length);
+      final batch = packages.sublist(start, end).toSet();
+      try {
+        final rawIcons = await fetchIcons(batch);
+        if (!mounted || generation != _iconDecodeGeneration) return;
+
+        final iconBase64ByPkg = <String, String>{};
+        for (final rawIcon in rawIcons) {
+          final pkg = (rawIcon["packageName"] ?? "").toString();
+          final b64 = (rawIcon["iconPngBase64"] ?? "").toString();
+          if (pkg.isNotEmpty && b64.isNotEmpty) {
+            iconBase64ByPkg[pkg] = b64;
+          }
+        }
+
+        loaded += iconBase64ByPkg.length;
+        await _decodeIconsProgressively(
+          iconBase64ByPkg,
+          generation: generation,
+        );
+      } catch (error) {
+        _debugAppPicker(
+          "icon fetch batch failed; start=$start count=${batch.length} "
+          "error=$error",
+        );
+      }
+
+      await Future<void>.delayed(Duration.zero);
+    }
+
+    _debugAppPicker(
+      "icon fetch end; decoded=$loaded packages=${packages.length} "
+      "durationMs=${stopwatch.elapsedMilliseconds}",
+    );
+  }
+
+  void _applyDecodedIcons(
+    Map<String, Uint8List> decodedIcons, {
+    required int generation,
+  }) {
+    if (!mounted ||
+        decodedIcons.isEmpty ||
+        generation != _iconDecodeGeneration) {
+      return;
+    }
+
+    setState(() {
+      _apps = [
+        for (final app in _apps)
+          decodedIcons.containsKey(app.packageName)
+              ? app.copyWith(iconBytes: decodedIcons[app.packageName])
+              : app,
+      ];
+      _applyCurrentFilter();
+    });
+  }
+
+  void _debugAppPicker(String message) {
+    if (!kDebugMode) return;
+    debugPrint("[app-list][picker] $message");
   }
 
   String _initials(String name) {
@@ -1791,13 +2460,13 @@ class _AppSelectionPageState extends State<AppSelectionPage> {
                   children: [
                     if (widget.editingDisabled)
                       Padding(
-                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
                         child: Container(
                           width: double.infinity,
-                          padding: const EdgeInsets.all(12),
+                          padding: const EdgeInsets.all(14),
                           decoration: BoxDecoration(
-                            color: cs.surfaceContainerHighest.withOpacity(0.55),
-                            borderRadius: BorderRadius.circular(16),
+                            color: cs.surfaceContainerHighest.withOpacity(0.62),
+                            borderRadius: BorderRadius.circular(20),
                             border: Border.all(
                                 color: cs.outlineVariant.withOpacity(0.45)),
                           ),
@@ -1805,62 +2474,91 @@ class _AppSelectionPageState extends State<AppSelectionPage> {
                         ),
                       ),
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
                       child: TextField(
                         controller: _searchCtrl,
                         decoration: const InputDecoration(
                           prefixIcon: Icon(Icons.search),
                           hintText: "Search apps…",
-                          border: OutlineInputBorder(),
-                          isDense: true,
                         ),
                       ),
                     ),
                     Expanded(
-                      child: ListView.separated(
+                      child: ListView.builder(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
                         itemCount: _filtered.length,
-                        separatorBuilder: (_, __) => Divider(
-                            height: 1,
-                            color: cs.outlineVariant.withOpacity(0.35)),
                         itemBuilder: (context, i) {
                           final app = _filtered[i];
                           final pkg = app.packageName;
                           final checked = _selected.contains(pkg);
 
-                          return CheckboxListTile(
-                            value: checked,
-                            onChanged: widget.editingDisabled
-                                ? null
-                                : (v) {
-                                    setState(() {
-                                      if (v == true) {
-                                        _selected.add(pkg);
-                                      } else {
-                                        _selected.remove(pkg);
-                                      }
-                                    });
-                                  },
-                            title: Text(app.appName),
-                            subtitle: Text(pkg,
-                                maxLines: 1, overflow: TextOverflow.ellipsis),
-                            secondary: CircleAvatar(
-                              backgroundColor:
-                                  cs.surfaceContainerHighest.withOpacity(0.55),
-                              child: (app.iconBytes != null &&
-                                      app.iconBytes!.isNotEmpty)
-                                  ? ClipOval(
-                                      child: Image.memory(
-                                        app.iconBytes!,
-                                        width: 26,
-                                        height: 26,
-                                        fit: BoxFit.contain,
-                                      ),
-                                    )
-                                  : Text(
-                                      _initials(app.appName),
-                                      style: const TextStyle(
-                                          fontWeight: FontWeight.w800),
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: Material(
+                              color: cs.surfaceContainer.withOpacity(0.92),
+                              borderRadius: BorderRadius.circular(20),
+                              clipBehavior: Clip.antiAlias,
+                              child: CheckboxListTile(
+                                value: checked,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                checkboxShape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                onChanged: widget.editingDisabled
+                                    ? null
+                                    : (v) {
+                                        setState(() {
+                                          if (v == true) {
+                                            _selected.add(pkg);
+                                          } else {
+                                            _selected.remove(pkg);
+                                          }
+                                        });
+                                      },
+                                title: Text(
+                                  app.appName,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                subtitle: Text(pkg,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis),
+                                secondary: Container(
+                                  width: 42,
+                                  height: 42,
+                                  decoration: BoxDecoration(
+                                    color: cs.surfaceContainerHighest
+                                        .withOpacity(0.65),
+                                    borderRadius: BorderRadius.circular(14),
+                                    border: Border.all(
+                                      color:
+                                          cs.outlineVariant.withOpacity(0.45),
                                     ),
+                                  ),
+                                  child: Center(
+                                    child: (app.iconBytes != null &&
+                                            app.iconBytes!.isNotEmpty)
+                                        ? ClipRRect(
+                                            borderRadius:
+                                                BorderRadius.circular(10),
+                                            child: Image.memory(
+                                              app.iconBytes!,
+                                              width: 28,
+                                              height: 28,
+                                              fit: BoxFit.contain,
+                                            ),
+                                          )
+                                        : Text(
+                                            _initials(app.appName),
+                                            style: const TextStyle(
+                                                fontWeight: FontWeight.w900),
+                                          ),
+                                  ),
+                                ),
+                              ),
                             ),
                           );
                         },
@@ -1882,14 +2580,26 @@ class GlassCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final dark = Theme.of(context).brightness == Brightness.dark;
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest.withOpacity(0.55),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: cs.outlineVariant.withOpacity(0.45)),
+        color: cs.surfaceContainer.withOpacity(dark ? 0.92 : 0.98),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(
+          color: dark
+              ? Colors.white.withOpacity(0.07)
+              : cs.outlineVariant.withOpacity(0.8),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(dark ? 0.26 : 0.07),
+            blurRadius: 26,
+            offset: const Offset(0, 14),
+          ),
+        ],
       ),
       child: child,
     );
@@ -1972,9 +2682,9 @@ class AppIconPill extends StatelessWidget {
       width: 38,
       height: 38,
       decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: cs.surfaceContainerHighest.withOpacity(0.55),
-        border: Border.all(color: cs.outlineVariant.withOpacity(0.45)),
+        borderRadius: BorderRadius.circular(14),
+        color: cs.surfaceContainerHighest.withOpacity(0.7),
+        border: Border.all(color: cs.primary.withOpacity(0.12)),
       ),
       child: Center(
         child: (iconBytes != null && iconBytes!.isNotEmpty)
@@ -2017,9 +2727,9 @@ class StatChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
       decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest.withOpacity(0.35),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: cs.outlineVariant.withOpacity(0.45)),
+        color: cs.surfaceContainerHighest.withOpacity(0.48),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: cs.outlineVariant.withOpacity(0.36)),
       ),
       child: Row(
         children: [
@@ -2079,9 +2789,9 @@ class SettingsRow extends StatelessWidget {
               width: 38,
               height: 38,
               decoration: BoxDecoration(
-                color: cs.surfaceContainerHighest.withOpacity(0.35),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: cs.outlineVariant.withOpacity(0.45)),
+                color: cs.primary.withOpacity(0.10),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: cs.primary.withOpacity(0.16)),
               ),
               child: Icon(icon, color: cs.primary),
             ),

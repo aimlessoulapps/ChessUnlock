@@ -24,6 +24,28 @@ class AppAnalytics {
         parameters: _screenParameters(_onboardingScreen),
       );
 
+  static void onboardingStarted() => _log(
+        "onboarding_started",
+        parameters: _screenParameters(_onboardingScreen),
+      );
+
+  static void onboardingCompleted() => _log(
+        "onboarding_completed",
+        parameters: _screenParameters(_onboardingScreen),
+      );
+
+  static void onboardingAnswer({
+    required String question,
+    required String answer,
+  }) =>
+      _log(
+        "onboarding_answer_$question",
+        parameters: {
+          ..._screenParameters(_onboardingScreen),
+          "answer": answer,
+        },
+      );
+
   static void onboardingChooseAppsButtonTapped() => _log(
         "onboarding_choose_apps_button_tapped",
         parameters: _screenParameters(_onboardingScreen),

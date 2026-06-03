@@ -9,8 +9,8 @@ object AnalyticsLogger {
         logEvent(context, "app_lock_overlay_shown")
     }
 
-    fun overlayOpenChessLockClicked(context: Context) {
-        logEvent(context, "open_chesslock_from_overlay_tapped")
+    fun overlayOpenChessUnlockClicked(context: Context) {
+        logEvent(context, "open_chessunlock_from_overlay_tapped")
     }
 
     private fun logEvent(context: Context, name: String) {

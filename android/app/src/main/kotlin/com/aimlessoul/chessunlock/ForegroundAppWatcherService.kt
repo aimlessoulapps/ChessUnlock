@@ -290,7 +290,7 @@ class ForegroundAppWatcherService : Service() {
         val btn = Button(this)
         btn.text = "Open ChessUnlock"
         btn.setOnClickListener {
-            AnalyticsLogger.overlayOpenChessLockClicked(this)
+            AnalyticsLogger.overlayOpenChessUnlockClicked(this)
             clearPendingBlockedPackage()
             suppressOverlayUntilMs = System.currentTimeMillis() + SELF_OPEN_SUPPRESS_MS
             lastPkg = packageName
