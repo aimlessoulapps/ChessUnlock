@@ -4,6 +4,7 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
@@ -13,6 +14,7 @@ import android.view.Gravity
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
@@ -261,34 +263,60 @@ class ForegroundAppWatcherService : Service() {
             return
         }
 
-        val appName = appNameForPackage(blockedPkg)
-
         val root = FrameLayout(this)
-        root.setBackgroundColor(0xCC000000.toInt())
+        root.setBackgroundColor(0xE6000000.toInt())
 
         val card = LinearLayout(this)
         card.orientation = LinearLayout.VERTICAL
-        card.setPadding(42, 42, 42, 36)
+        card.gravity = Gravity.CENTER_HORIZONTAL
+        card.setPadding(dp(28), dp(30), dp(28), dp(26))
 
         val bg = GradientDrawable()
-        bg.cornerRadius = 32f
-        bg.setColor(0xFFFFFFFF.toInt())
+        bg.cornerRadius = dp(28).toFloat()
+        bg.setColor(0xFF151A17.toInt())
+        bg.setStroke(dp(1), 0x24FFFFFF)
         card.background = bg
 
+        val iconFrame = FrameLayout(this)
+        val iconBg = GradientDrawable()
+        iconBg.cornerRadius = dp(22).toFloat()
+        iconBg.setColor(0x1F43D66E)
+        iconBg.setStroke(dp(1), 0x3343D66E)
+        iconFrame.background = iconBg
+
+        val icon = ImageView(this)
+        icon.setImageDrawable(applicationInfo.loadIcon(packageManager))
+        icon.scaleType = ImageView.ScaleType.FIT_CENTER
+        val iconLp = FrameLayout.LayoutParams(dp(42), dp(42))
+        iconLp.gravity = Gravity.CENTER
+        iconFrame.addView(icon, iconLp)
+
         val title = TextView(this)
-        title.text = "Locked"
-        title.textSize = 20f
-        title.setTextColor(0xFF111111.toInt())
-        title.setPadding(0, 0, 0, 14)
+        title.text = "This app is Restricted"
+        title.textSize = 22f
+        title.typeface = Typeface.DEFAULT_BOLD
+        title.gravity = Gravity.CENTER
+        title.setTextColor(0xFFF4F7F5.toInt())
+        title.setPadding(0, dp(22), 0, dp(10))
 
         val subtitle = TextView(this)
-        subtitle.text = overlaySubtitleText(appName)
-        subtitle.textSize = 14f
-        subtitle.setTextColor(0xFF333333.toInt())
-        subtitle.setPadding(0, 0, 0, 24)
+        subtitle.text = overlaySubtitleText()
+        subtitle.textSize = 15f
+        subtitle.gravity = Gravity.CENTER
+        subtitle.setLineSpacing(0f, 1.12f)
+        subtitle.setTextColor(0xFFB9C4BD.toInt())
+        subtitle.setPadding(0, 0, 0, dp(24))
 
         val btn = Button(this)
         btn.text = "Open ChessUnlock"
+        btn.isAllCaps = false
+        btn.textSize = 16f
+        btn.typeface = Typeface.DEFAULT_BOLD
+        btn.setTextColor(0xFF06110A.toInt())
+        val btnBg = GradientDrawable()
+        btnBg.cornerRadius = dp(18).toFloat()
+        btnBg.setColor(0xFF43D66E.toInt())
+        btn.background = btnBg
         btn.setOnClickListener {
             AnalyticsLogger.overlayOpenChessUnlockClicked(this)
             clearPendingBlockedPackage()
@@ -302,17 +330,23 @@ class ForegroundAppWatcherService : Service() {
             handler.postDelayed(tick, 300)
         }
 
+        val iconFrameLp = LinearLayout.LayoutParams(dp(76), dp(76))
+        card.addView(iconFrame, iconFrameLp)
         card.addView(title)
         card.addView(subtitle)
-        card.addView(btn)
+        val btnLp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            dp(54)
+        )
+        card.addView(btn, btnLp)
 
         val lpCard = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.WRAP_CONTENT
         )
         lpCard.gravity = Gravity.CENTER
-        lpCard.marginStart = 36
-        lpCard.marginEnd = 36
+        lpCard.marginStart = dp(24)
+        lpCard.marginEnd = dp(24)
 
         root.addView(card, lpCard)
 
@@ -346,21 +380,16 @@ class ForegroundAppWatcherService : Service() {
 
     private fun updateOverlayText(blockedPkg: String) {
         if (overlayBlockedPkg == blockedPkg) return
-        overlaySubtitle?.text = overlaySubtitleText(appNameForPackage(blockedPkg))
+        overlaySubtitle?.text = overlaySubtitleText()
         overlayBlockedPkg = blockedPkg
     }
 
-    private fun appNameForPackage(pkg: String): String {
-        return try {
-            val ai = packageManager.getApplicationInfo(pkg, 0)
-            packageManager.getApplicationLabel(ai)?.toString() ?: pkg
-        } catch (_: Throwable) {
-            pkg
-        }
+    private fun overlaySubtitleText(): String {
+        return "Solve a chess puzzle in ChessUnlock to use this app."
     }
 
-    private fun overlaySubtitleText(appName: String): String {
-        return "You're in: $appName\nSolve the puzzle to unlock."
+    private fun dp(value: Int): Int {
+        return (value * resources.displayMetrics.density + 0.5f).toInt()
     }
 
     private fun hideOverlay() {

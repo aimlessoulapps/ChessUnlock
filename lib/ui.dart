@@ -171,9 +171,10 @@ class BannerAdSlot extends StatefulWidget {
 
 class _BannerAdSlotState extends State<BannerAdSlot>
     with WidgetsBindingObserver {
-  static const _testBannerAdUnitId = "ca-app-pub-8108010703558411/9765598008";
-  static const _productionBannerAdUnitId =
-      "ca-app-pub-8108010703558411/9765598008";
+  static const _androidTestBannerAdUnitId =
+      "ca-app-pub-3940256099942544/6300978111";
+  static const _iosTestBannerAdUnitId =
+      "ca-app-pub-3940256099942544/2934735716";
   static const _configuredBannerAdUnitId = String.fromEnvironment(
     "CHESSUNLOCK_BANNER_AD_UNIT_ID",
   );
@@ -202,10 +203,10 @@ class _BannerAdSlotState extends State<BannerAdSlot>
     if (configured.isNotEmpty) {
       return configured;
     }
-    if (kReleaseMode) {
-      return _productionBannerAdUnitId;
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      return _iosTestBannerAdUnitId;
     }
-    return _testBannerAdUnitId;
+    return _androidTestBannerAdUnitId;
   }
 
   bool get _hasUsableBannerAdUnitId => _isValidAdUnitId(_bannerAdUnitId);
@@ -479,6 +480,42 @@ class _BannerAdSlotState extends State<BannerAdSlot>
               ),
             )
           : const SizedBox.shrink(),
+    );
+  }
+}
+
+class ScreenAdHeader extends StatelessWidget {
+  final String title;
+  final bool active;
+  final String screenName;
+
+  const ScreenAdHeader({
+    super.key,
+    required this.title,
+    required this.active,
+    required this.screenName,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 2),
+        Text(
+          title,
+          style: Theme.of(context).textTheme.headlineLarge?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+        ),
+        const SizedBox(height: 8),
+        BannerAdSlot(
+          height: 54,
+          active: active,
+          screenName: screenName,
+        ),
+        const SizedBox(height: 8),
+      ],
     );
   }
 }
@@ -1064,24 +1101,15 @@ class HomeTab extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const SizedBox(height: 2),
-          Text(
-            "Lock Mode",
-            style: Theme.of(context).textTheme.headlineLarge?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
+          ScreenAdHeader(
+            title: "Lock Mode",
+            active: active,
+            screenName: "home",
           ),
-          const SizedBox(height: 8),
           Expanded(
             child: ListView(
               padding: const EdgeInsets.only(bottom: 8),
               children: [
-                BannerAdSlot(
-                  height: 54,
-                  active: active,
-                  screenName: "home",
-                ),
-                const SizedBox(height: 8),
                 GlassCard(
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1513,16 +1541,8 @@ class PuzzleTab extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const SizedBox(height: 2),
-          Text(
-            "Puzzle",
-            style: Theme.of(context).textTheme.headlineLarge?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
-          ),
-          const SizedBox(height: 8),
-          BannerAdSlot(
-            height: 54,
+          ScreenAdHeader(
+            title: "Puzzle",
             active: active,
             screenName: "puzzle",
           ),
@@ -1539,8 +1559,8 @@ class PuzzleTab extends StatelessWidget {
                 final minBoard = min(maxBoardWidth, 160.0);
                 final statusExtra =
                     puzzle != null && !canUserMove && !solved ? 22.0 : 0.0;
-                final reservedHeight = 132.0 +
-                    (puzzle != null ? 28.0 : 0.0) +
+                final reservedHeight = 126.0 +
+                    (puzzle != null ? 48.0 : 0.0) +
                     (loading ? 40.0 : 0.0) +
                     (canUnlockApps ? 42.0 : 0.0) +
                     statusExtra;
@@ -1556,48 +1576,70 @@ class PuzzleTab extends StatelessWidget {
                   child: ConstrainedBox(
                     constraints:
                         BoxConstraints(minHeight: constraints.maxHeight),
-                    child: Center(
+                    child: Align(
+                      alignment: Alignment.topCenter,
                       child: Column(
                         children: [
                           if (puzzle != null)
                             Padding(
-                              padding: const EdgeInsets.only(bottom: 6),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      puzzle!.type,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .titleSmall
-                                          ?.copyWith(
-                                            color: cs.onSurfaceVariant,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
+                              padding: const EdgeInsets.only(bottom: 10),
+                              child: Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 9,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: cs.surfaceContainerHighest
+                                      .withOpacity(0.38),
+                                  borderRadius: BorderRadius.circular(16),
+                                  border: Border.all(
+                                    color: cs.outlineVariant.withOpacity(0.42),
                                   ),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 9, vertical: 4),
-                                    decoration: BoxDecoration(
-                                      borderRadius: BorderRadius.circular(999),
-                                      border: Border.all(
-                                          color: cs.outlineVariant
-                                              .withOpacity(0.5)),
-                                      color: cs.surfaceContainerHighest
-                                          .withOpacity(0.35),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        puzzle!.type,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleSmall
+                                            ?.copyWith(
+                                              color: cs.onSurfaceVariant,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
                                     ),
-                                    child: Text(
-                                      "Rating ${puzzle!.rating}",
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .labelMedium
-                                          ?.copyWith(
-                                              fontWeight: FontWeight.w700),
+                                    const SizedBox(width: 10),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 5,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        borderRadius:
+                                            BorderRadius.circular(999),
+                                        border: Border.all(
+                                          color: cs.primary.withOpacity(0.22),
+                                        ),
+                                        color: cs.primary.withOpacity(0.10),
+                                      ),
+                                      child: Text(
+                                        "Rating ${puzzle!.rating}",
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .labelMedium
+                                            ?.copyWith(
+                                              color: cs.primary,
+                                              fontWeight: FontWeight.w800,
+                                            ),
+                                      ),
                                     ),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
                             ),
                           if (loading)
@@ -1888,22 +1930,11 @@ class SettingsTab extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const SizedBox(height: 2),
-          // ✅ Your change: Settings title first (like other tabs)
-          Text(
-            "Settings",
-            style: Theme.of(context).textTheme.headlineLarge?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
-          ),
-          const SizedBox(height: 8),
-          BannerAdSlot(
-            height: 54,
+          ScreenAdHeader(
+            title: "Settings",
             active: active,
             screenName: "settings",
           ),
-          const SizedBox(height: 8),
-
           Expanded(
             child: ListView(
               padding: const EdgeInsets.only(bottom: 28),

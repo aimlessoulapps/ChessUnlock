@@ -2,18 +2,27 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#111111"
+    android:background="#0B0F0D"
     android:gravity="center"
     android:orientation="vertical"
     android:padding="24dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/gate_card_background"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="28dp">
 
     <TextView
         android:id="@+id/gateTitle"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Locked"
-        android:textColor="#FFFFFF"
-        android:textSize="24sp"
+            android:gravity="center"
+            android:text="This app is Restricted"
+            android:textColor="#F4F7F5"
+            android:textSize="23sp"
         android:textStyle="bold" />
 
     <TextView
@@ -22,14 +31,18 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="14dp"
         android:gravity="center"
-        android:text="Solve in ChessUnlock to continue"
-        android:textColor="#DDDDDD"
-        android:textSize="16sp" />
+            android:text="Solve a chess puzzle in ChessUnlock to use this app."
+            android:textColor="#B9C4BD"
+            android:textSize="15sp" />
 
     <Button
         android:id="@+id/solveNowBtn"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="22dp"
-        android:text="Solve now" />
+            android:background="@drawable/gate_primary_button_background"
+            android:text="Open ChessUnlock"
+            android:textAllCaps="false"
+            android:textColor="#06110A" />
+    </LinearLayout>
 </LinearLayout>
