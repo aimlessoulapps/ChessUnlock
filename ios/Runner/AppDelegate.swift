@@ -14,4 +14,9 @@ import UIKit
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     ScreenTimeBridge.register(with: engineBridge.applicationRegistrar)
   }
+
+  override func applicationDidBecomeActive(_ application: UIApplication) {
+    super.applicationDidBecomeActive(application)
+    ScreenTimeBridge.reconcileOnAppActivation()
+  }
 }

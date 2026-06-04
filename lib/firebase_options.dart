@@ -26,10 +26,7 @@ class DefaultFirebaseOptions {
       case TargetPlatform.android:
         return android;
       case TargetPlatform.iOS:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for ios - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
+        return ios;
       case TargetPlatform.macOS:
         throw UnsupportedError(
           'DefaultFirebaseOptions have not been configured for macos - '
@@ -58,6 +55,15 @@ class DefaultFirebaseOptions {
     messagingSenderId: '785745736507',
     projectId: 'chessunlock-655a7',
     storageBucket: 'chessunlock-655a7.firebasestorage.app',
+  );
+
+  static const FirebaseOptions ios = FirebaseOptions(
+    apiKey: 'AIzaSyDIvE1jphJIm2prBo1hAQSnGgMK8gLrxCs',
+    appId: '1:785745736507:ios:be54d3fa69e8e95f96fd1e',
+    messagingSenderId: '785745736507',
+    projectId: 'chessunlock-655a7',
+    storageBucket: 'chessunlock-655a7.firebasestorage.app',
+    iosBundleId: 'com.aimlessoul.chessunlock',
   );
 
 }

@@ -562,6 +562,9 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+        _queueExpirySync();
+      }
       unawaited(_ensureAppLockReadyIfNeeded());
       unawaited(_openPuzzleFromOverlayRequestIfNeeded());
       _scheduleLaunchableAppsPrefetch(reason: "app_resumed");

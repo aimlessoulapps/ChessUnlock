@@ -1,10 +1,23 @@
 import FamilyControls
 import Flutter
+import DeviceActivity
 import ManagedSettings
 import SwiftUI
 import UIKit
 
 private let familyActivitySelectionStoreKey = "ios.familyActivitySelection.v1"
+private let screenTimeAppGroupIdentifier = "group.com.aimlessoul.chessunlock"
+private let screenTimeLockEnabledStoreKey = "ios.screenTime.lockEnabled.v1"
+private let screenTimeIndefiniteUnlockStoreKey = "ios.screenTime.indefiniteUnlock.v1"
+private let screenTimeUnlockUntilStoreKey = "ios.screenTime.unlockUntilMs.v1"
+private let screenTimeSelectionAppCountStoreKey = "ios.screenTime.selectionApplicationCount.v1"
+private let screenTimeSelectionCategoryCountStoreKey = "ios.screenTime.selectionCategoryCount.v1"
+private let screenTimeSelectionWebDomainCountStoreKey = "ios.screenTime.selectionWebDomainCount.v1"
+
+@available(iOS 15.2, *)
+private extension DeviceActivityName {
+  static let chessUnlockRelock = Self("ChessUnlockRelock")
+}
 
 final class ScreenTimeBridge: NSObject {
   private static let channelName = "chesslock/screen_time"
@@ -23,6 +36,20 @@ final class ScreenTimeBridge: NSObject {
       ScreenTimeSelectionPreviewViewFactory(),
       withId: selectionPreviewViewType
     )
+    if #available(iOS 15.2, *) {
+      Task { @MainActor in
+        sharedBridge?.reconcileTimedUnlockIfNeeded(action: "register")
+      }
+    }
+  }
+
+  static func reconcileOnAppActivation() {
+    guard #available(iOS 15.2, *) else {
+      return
+    }
+    Task { @MainActor in
+      sharedBridge?.reconcileTimedUnlockIfNeeded(action: "activation")
+    }
   }
 
   private init(binaryMessenger: FlutterBinaryMessenger) {
@@ -265,8 +292,22 @@ final class ScreenTimeBridge: NSObject {
       )
 
       if lockEnabled {
+        stopRelockMonitoring()
         result(applySelectionShields(action: "syncLockState"))
+      } else if indefiniteUnlock {
+        stopRelockMonitoring()
+        clearShieldSettings()
+        result(operationPayload(success: true, action: "syncLockState", shielded: false))
+      } else if unlockUntilMs > currentTimeMs() {
+        scheduleRelockMonitoring(unlockUntilMs: unlockUntilMs)
+        clearShieldSettings()
+        result(operationPayload(success: true, action: "syncLockState", shielded: false))
+      } else if unlockUntilMs > 0 {
+        saveRuntimeState(lockEnabled: true, indefiniteUnlock: false, unlockUntilMs: 0)
+        stopRelockMonitoring()
+        result(applySelectionShields(action: "syncLockStateExpired"))
       } else {
+        stopRelockMonitoring()
         clearShieldSettings()
         result(operationPayload(success: true, action: "syncLockState", shielded: false))
       }
@@ -305,6 +346,7 @@ final class ScreenTimeBridge: NSObject {
     Task { @MainActor in
       debugLog("start enforcement requested")
       saveRuntimeState(lockEnabled: true, indefiniteUnlock: false, unlockUntilMs: 0)
+      stopRelockMonitoring()
       result(applySelectionShields(action: "startEnforcement"))
     }
   }
@@ -317,6 +359,8 @@ final class ScreenTimeBridge: NSObject {
 
     Task { @MainActor in
       debugLog("stop enforcement requested")
+      saveRuntimeState(lockEnabled: false, indefiniteUnlock: false, unlockUntilMs: 0)
+      stopRelockMonitoring()
       clearShieldSettings()
       result(operationPayload(success: true, action: "stopEnforcement", shielded: false))
     }
@@ -340,6 +384,13 @@ final class ScreenTimeBridge: NSObject {
       debugLog(
         "unlockFor requested; indefinite=\(indefiniteUnlock) unlockUntilMs=\(unlockUntilMs)"
       )
+      if indefiniteUnlock {
+        stopRelockMonitoring()
+      } else if unlockUntilMs > currentTimeMs() {
+        scheduleRelockMonitoring(unlockUntilMs: unlockUntilMs)
+      } else {
+        stopRelockMonitoring()
+      }
       clearShieldSettings()
       result(operationPayload(success: true, action: "unlockFor", shielded: false))
     }
@@ -354,6 +405,7 @@ final class ScreenTimeBridge: NSObject {
     Task { @MainActor in
       debugLog("relockNow requested")
       saveRuntimeState(lockEnabled: true, indefiniteUnlock: false, unlockUntilMs: 0)
+      stopRelockMonitoring()
       result(applySelectionShields(action: "relockNow"))
     }
   }
@@ -402,15 +454,19 @@ private extension ScreenTimeBridge {
   }
 
   private var lockEnabledStoreKey: String {
-    "ios.screenTime.lockEnabled.v1"
+    screenTimeLockEnabledStoreKey
   }
 
   private var indefiniteUnlockStoreKey: String {
-    "ios.screenTime.indefiniteUnlock.v1"
+    screenTimeIndefiniteUnlockStoreKey
   }
 
   private var unlockUntilStoreKey: String {
-    "ios.screenTime.unlockUntilMs.v1"
+    screenTimeUnlockUntilStoreKey
+  }
+
+  private var sharedDefaults: UserDefaults {
+    UserDefaults(suiteName: screenTimeAppGroupIdentifier) ?? .standard
   }
 
   @MainActor
@@ -441,10 +497,16 @@ private extension ScreenTimeBridge {
   }
 
   func loadSelection() -> FamilyActivitySelection {
+    if let data = sharedDefaults.data(forKey: selectionStoreKey),
+       let selection = try? JSONDecoder().decode(FamilyActivitySelection.self, from: data) {
+      return selection
+    }
+
     guard let data = UserDefaults.standard.data(forKey: selectionStoreKey),
           let selection = try? JSONDecoder().decode(FamilyActivitySelection.self, from: data) else {
       return FamilyActivitySelection()
     }
+    saveSelection(selection)
     return selection
   }
 
@@ -452,6 +514,10 @@ private extension ScreenTimeBridge {
     guard let data = try? JSONEncoder().encode(selection) else {
       return
     }
+    sharedDefaults.set(data, forKey: selectionStoreKey)
+    sharedDefaults.set(selection.applicationTokens.count, forKey: screenTimeSelectionAppCountStoreKey)
+    sharedDefaults.set(selection.categoryTokens.count, forKey: screenTimeSelectionCategoryCountStoreKey)
+    sharedDefaults.set(selection.webDomainTokens.count, forKey: screenTimeSelectionWebDomainCountStoreKey)
     UserDefaults.standard.set(data, forKey: selectionStoreKey)
   }
 
@@ -460,9 +526,69 @@ private extension ScreenTimeBridge {
     indefiniteUnlock: Bool,
     unlockUntilMs: Int64
   ) {
+    sharedDefaults.set(lockEnabled, forKey: lockEnabledStoreKey)
+    sharedDefaults.set(indefiniteUnlock, forKey: indefiniteUnlockStoreKey)
+    sharedDefaults.set(unlockUntilMs, forKey: unlockUntilStoreKey)
     UserDefaults.standard.set(lockEnabled, forKey: lockEnabledStoreKey)
     UserDefaults.standard.set(indefiniteUnlock, forKey: indefiniteUnlockStoreKey)
     UserDefaults.standard.set(unlockUntilMs, forKey: unlockUntilStoreKey)
+  }
+
+  func currentTimeMs() -> Int64 {
+    Int64(Date().timeIntervalSince1970 * 1000)
+  }
+
+  func scheduleRelockMonitoring(unlockUntilMs: Int64) {
+    guard unlockUntilMs > currentTimeMs() else {
+      return
+    }
+
+    let calendar = Calendar.current
+    let startDate = Date()
+    let endDate = Date(timeIntervalSince1970: TimeInterval(unlockUntilMs) / 1000)
+    let startComponents = calendar.dateComponents(
+      [.era, .year, .month, .day, .hour, .minute, .second],
+      from: startDate
+    )
+    let endComponents = calendar.dateComponents(
+      [.era, .year, .month, .day, .hour, .minute, .second],
+      from: endDate
+    )
+    let schedule = DeviceActivitySchedule(
+      intervalStart: startComponents,
+      intervalEnd: endComponents,
+      repeats: false
+    )
+
+    do {
+      try DeviceActivityCenter().startMonitoring(.chessUnlockRelock, during: schedule)
+      debugLog("scheduled native relock monitor until \(unlockUntilMs)")
+    } catch {
+      debugLog("failed to schedule native relock monitor; error=\(error.localizedDescription)")
+    }
+  }
+
+  func stopRelockMonitoring() {
+    DeviceActivityCenter().stopMonitoring([.chessUnlockRelock])
+    debugLog("native relock monitor stopped")
+  }
+
+  @MainActor
+  func reconcileTimedUnlockIfNeeded(action: String) {
+    let indefiniteUnlock = sharedDefaults.bool(forKey: indefiniteUnlockStoreKey)
+    let unlockUntilMs = Int64(sharedDefaults.integer(forKey: unlockUntilStoreKey))
+    guard !indefiniteUnlock, unlockUntilMs > 0 else {
+      return
+    }
+
+    if unlockUntilMs <= currentTimeMs() {
+      debugLog("timed unlock expired during \(action); reapplying shields")
+      saveRuntimeState(lockEnabled: true, indefiniteUnlock: false, unlockUntilMs: 0)
+      stopRelockMonitoring()
+      _ = applySelectionShields(action: "\(action)Expired")
+    } else {
+      scheduleRelockMonitoring(unlockUntilMs: unlockUntilMs)
+    }
   }
 
   func int64Value(from value: Any?) -> Int64? {
@@ -807,6 +933,12 @@ private final class ScreenTimeSelectionPreviewPlatformView: NSObject, FlutterPla
   }
 
   private static func loadSelection() -> FamilyActivitySelection {
+    let defaults = UserDefaults(suiteName: screenTimeAppGroupIdentifier) ?? .standard
+    if let data = defaults.data(forKey: familyActivitySelectionStoreKey),
+       let selection = try? JSONDecoder().decode(FamilyActivitySelection.self, from: data) {
+      return selection
+    }
+
     guard let data = UserDefaults.standard.data(forKey: familyActivitySelectionStoreKey),
           let selection = try? JSONDecoder().decode(FamilyActivitySelection.self, from: data) else {
       return FamilyActivitySelection()
