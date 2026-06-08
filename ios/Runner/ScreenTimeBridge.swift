@@ -13,10 +13,29 @@ private let screenTimeUnlockUntilStoreKey = "ios.screenTime.unlockUntilMs.v1"
 private let screenTimeSelectionAppCountStoreKey = "ios.screenTime.selectionApplicationCount.v1"
 private let screenTimeSelectionCategoryCountStoreKey = "ios.screenTime.selectionCategoryCount.v1"
 private let screenTimeSelectionWebDomainCountStoreKey = "ios.screenTime.selectionWebDomainCount.v1"
+private let minimumNativeRelockIntervalMs: Int64 = 15 * 60 * 1000
+
+private struct RelockMonitoringResult {
+  let scheduled: Bool
+  let requestedUnlockUntilMs: Int64
+  let monitorUntilMs: Int64
+  let usedMinimumFallback: Bool
+  let eventScheduled: Bool
+  let eventThresholdMs: Int64
+  let eventApplicationCount: Int
+  let eventCategoryCount: Int
+  let eventWebDomainCount: Int
+  let errorMessage: String?
+}
 
 @available(iOS 15.2, *)
 private extension DeviceActivityName {
   static let chessUnlockRelock = Self("ChessUnlockRelock")
+}
+
+@available(iOS 15.2, *)
+private extension DeviceActivityEvent.Name {
+  static let chessUnlockRelockThreshold = Self("ChessUnlockRelockThreshold")
 }
 
 final class ScreenTimeBridge: NSObject {
@@ -299,9 +318,16 @@ final class ScreenTimeBridge: NSObject {
         clearShieldSettings()
         result(operationPayload(success: true, action: "syncLockState", shielded: false))
       } else if unlockUntilMs > currentTimeMs() {
-        scheduleRelockMonitoring(unlockUntilMs: unlockUntilMs)
+        let scheduleResult = scheduleRelockMonitoring(unlockUntilMs: unlockUntilMs)
         clearShieldSettings()
-        result(operationPayload(success: true, action: "syncLockState", shielded: false))
+        result(
+          operationPayload(
+            success: true,
+            action: "syncLockState",
+            shielded: false,
+            relockMonitoringResult: scheduleResult
+          )
+        )
       } else if unlockUntilMs > 0 {
         saveRuntimeState(lockEnabled: true, indefiniteUnlock: false, unlockUntilMs: 0)
         stopRelockMonitoring()
@@ -375,6 +401,7 @@ final class ScreenTimeBridge: NSObject {
     Task { @MainActor in
       let payload = arguments as? [String: Any] ?? [:]
       let indefiniteUnlock = payload["indefinite"] as? Bool ?? false
+      let requestedDurationMs = int64Value(from: payload["durationMs"]) ?? 0
       let unlockUntilMs = int64Value(from: payload["unlockUntilMs"]) ?? 0
       saveRuntimeState(
         lockEnabled: false,
@@ -382,17 +409,28 @@ final class ScreenTimeBridge: NSObject {
         unlockUntilMs: unlockUntilMs
       )
       debugLog(
-        "unlockFor requested; indefinite=\(indefiniteUnlock) unlockUntilMs=\(unlockUntilMs)"
+        "unlockFor requested; indefinite=\(indefiniteUnlock) durationMs=\(requestedDurationMs) unlockUntilMs=\(unlockUntilMs)"
       )
+      var scheduleResult: RelockMonitoringResult?
       if indefiniteUnlock {
         stopRelockMonitoring()
       } else if unlockUntilMs > currentTimeMs() {
-        scheduleRelockMonitoring(unlockUntilMs: unlockUntilMs)
+        scheduleResult = scheduleRelockMonitoring(
+          unlockUntilMs: unlockUntilMs,
+          requestedDurationMs: requestedDurationMs
+        )
       } else {
         stopRelockMonitoring()
       }
       clearShieldSettings()
-      result(operationPayload(success: true, action: "unlockFor", shielded: false))
+      result(
+        operationPayload(
+          success: true,
+          action: "unlockFor",
+          shielded: false,
+          relockMonitoringResult: scheduleResult
+        )
+      )
     }
   }
 
@@ -499,13 +537,20 @@ private extension ScreenTimeBridge {
   func loadSelection() -> FamilyActivitySelection {
     if let data = sharedDefaults.data(forKey: selectionStoreKey),
        let selection = try? JSONDecoder().decode(FamilyActivitySelection.self, from: data) {
+      debugLog(
+        "loaded selection from App Group; bytes=\(data.count) apps=\(selection.applicationTokens.count) categories=\(selection.categoryTokens.count) webDomains=\(selection.webDomainTokens.count)"
+      )
       return selection
     }
 
     guard let data = UserDefaults.standard.data(forKey: selectionStoreKey),
           let selection = try? JSONDecoder().decode(FamilyActivitySelection.self, from: data) else {
+      debugLog("selection load missed App Group and standard defaults")
       return FamilyActivitySelection()
     }
+    debugLog(
+      "loaded selection from standard defaults fallback; bytes=\(data.count) apps=\(selection.applicationTokens.count) categories=\(selection.categoryTokens.count) webDomains=\(selection.webDomainTokens.count)"
+    )
     saveSelection(selection)
     return selection
   }
@@ -519,6 +564,9 @@ private extension ScreenTimeBridge {
     sharedDefaults.set(selection.categoryTokens.count, forKey: screenTimeSelectionCategoryCountStoreKey)
     sharedDefaults.set(selection.webDomainTokens.count, forKey: screenTimeSelectionWebDomainCountStoreKey)
     UserDefaults.standard.set(data, forKey: selectionStoreKey)
+    debugLog(
+      "saved selection to App Group; bytes=\(data.count) apps=\(selection.applicationTokens.count) categories=\(selection.categoryTokens.count) webDomains=\(selection.webDomainTokens.count)"
+    )
   }
 
   func saveRuntimeState(
@@ -538,14 +586,74 @@ private extension ScreenTimeBridge {
     Int64(Date().timeIntervalSince1970 * 1000)
   }
 
-  func scheduleRelockMonitoring(unlockUntilMs: Int64) {
-    guard unlockUntilMs > currentTimeMs() else {
-      return
+  func thresholdComponents(durationMs: Int64) -> DateComponents {
+    let totalSeconds = max(1, Int((durationMs + 999) / 1000))
+    let hours = totalSeconds / 3600
+    let minutes = (totalSeconds % 3600) / 60
+    let seconds = totalSeconds % 60
+    return DateComponents(hour: hours, minute: minutes, second: seconds)
+  }
+
+  func relockThresholdEvent(
+    selection: FamilyActivitySelection,
+    thresholdMs: Int64
+  ) -> DeviceActivityEvent? {
+    guard selectionTotalCount(selection) > 0, thresholdMs > 0 else {
+      return nil
+    }
+
+    let threshold = thresholdComponents(durationMs: thresholdMs)
+    if #available(iOS 17.4, *) {
+      return DeviceActivityEvent(
+        applications: selection.applicationTokens,
+        categories: selection.categoryTokens,
+        webDomains: selection.webDomainTokens,
+        threshold: threshold,
+        includesPastActivity: false
+      )
+    }
+
+    return DeviceActivityEvent(
+      applications: selection.applicationTokens,
+      categories: selection.categoryTokens,
+      webDomains: selection.webDomainTokens,
+      threshold: threshold
+    )
+  }
+
+  func scheduleRelockMonitoring(
+    unlockUntilMs: Int64,
+    requestedDurationMs: Int64? = nil
+  ) -> RelockMonitoringResult {
+    let nowMs = currentTimeMs()
+    guard unlockUntilMs > nowMs else {
+      return RelockMonitoringResult(
+        scheduled: false,
+        requestedUnlockUntilMs: unlockUntilMs,
+        monitorUntilMs: 0,
+        usedMinimumFallback: false,
+        eventScheduled: false,
+        eventThresholdMs: 0,
+        eventApplicationCount: 0,
+        eventCategoryCount: 0,
+        eventWebDomainCount: 0,
+        errorMessage: "unlock expiry is not in the future"
+      )
     }
 
     let calendar = Calendar.current
     let startDate = Date()
-    let endDate = Date(timeIntervalSince1970: TimeInterval(unlockUntilMs) / 1000)
+    let durationMs = requestedDurationMs ?? (unlockUntilMs - nowMs)
+    let useMinimumFallback = durationMs > 0 && durationMs < minimumNativeRelockIntervalMs
+    let monitorUntilMs: Int64
+    if useMinimumFallback {
+      monitorUntilMs = nowMs + minimumNativeRelockIntervalMs
+    } else if requestedDurationMs != nil && durationMs >= minimumNativeRelockIntervalMs {
+      monitorUntilMs = nowMs + durationMs
+    } else {
+      monitorUntilMs = max(unlockUntilMs, nowMs + minimumNativeRelockIntervalMs)
+    }
+    let endDate = Date(timeIntervalSince1970: TimeInterval(monitorUntilMs) / 1000)
     let startComponents = calendar.dateComponents(
       [.era, .year, .month, .day, .hour, .minute, .second],
       from: startDate
@@ -559,12 +667,67 @@ private extension ScreenTimeBridge {
       intervalEnd: endComponents,
       repeats: false
     )
+    let selection = loadSelection()
+    let eventThresholdMs = max(1, durationMs)
+    let event = relockThresholdEvent(
+      selection: selection,
+      thresholdMs: eventThresholdMs
+    )
+    let events: [DeviceActivityEvent.Name: DeviceActivityEvent]
+    if let event {
+      events = [.chessUnlockRelockThreshold: event]
+    } else {
+      events = [:]
+    }
+    let eventScheduled = event != nil
+    let includesPastActivityReset: Bool
+    if #available(iOS 17.4, *) {
+      includesPastActivityReset = eventScheduled
+    } else {
+      includesPastActivityReset = false
+    }
+    debugLog(
+      "native relock monitor prepared; windowStartMs=\(nowMs) windowEndMs=\(monitorUntilMs) selectedDurationMs=\(durationMs) eventThresholdMs=\(eventThresholdMs) eventScheduled=\(eventScheduled) includesPastActivityReset=\(includesPastActivityReset) apps=\(selection.applicationTokens.count) categories=\(selection.categoryTokens.count) webDomains=\(selection.webDomainTokens.count)"
+    )
 
     do {
-      try DeviceActivityCenter().startMonitoring(.chessUnlockRelock, during: schedule)
-      debugLog("scheduled native relock monitor until \(unlockUntilMs)")
+      try DeviceActivityCenter().startMonitoring(
+        .chessUnlockRelock,
+        during: schedule,
+        events: events
+      )
+      debugLog(
+        "scheduled native relock monitor; requestedUnlockUntilMs=\(unlockUntilMs) monitorUntilMs=\(monitorUntilMs) usedMinimumFallback=\(useMinimumFallback) eventScheduled=\(eventScheduled) eventThresholdMs=\(eventThresholdMs)"
+      )
+      return RelockMonitoringResult(
+        scheduled: true,
+        requestedUnlockUntilMs: unlockUntilMs,
+        monitorUntilMs: monitorUntilMs,
+        usedMinimumFallback: useMinimumFallback,
+        eventScheduled: eventScheduled,
+        eventThresholdMs: eventThresholdMs,
+        eventApplicationCount: selection.applicationTokens.count,
+        eventCategoryCount: selection.categoryTokens.count,
+        eventWebDomainCount: selection.webDomainTokens.count,
+        errorMessage: nil
+      )
     } catch {
-      debugLog("failed to schedule native relock monitor; error=\(error.localizedDescription)")
+      let message = error.localizedDescription
+      debugLog(
+        "failed to schedule native relock monitor; requestedUnlockUntilMs=\(unlockUntilMs) monitorUntilMs=\(monitorUntilMs) usedMinimumFallback=\(useMinimumFallback) eventScheduled=\(eventScheduled) eventThresholdMs=\(eventThresholdMs) error=\(message)"
+      )
+      return RelockMonitoringResult(
+        scheduled: false,
+        requestedUnlockUntilMs: unlockUntilMs,
+        monitorUntilMs: monitorUntilMs,
+        usedMinimumFallback: useMinimumFallback,
+        eventScheduled: eventScheduled,
+        eventThresholdMs: eventThresholdMs,
+        eventApplicationCount: selection.applicationTokens.count,
+        eventCategoryCount: selection.categoryTokens.count,
+        eventWebDomainCount: selection.webDomainTokens.count,
+        errorMessage: message
+      )
     }
   }
 
@@ -587,7 +750,7 @@ private extension ScreenTimeBridge {
       stopRelockMonitoring()
       _ = applySelectionShields(action: "\(action)Expired")
     } else {
-      scheduleRelockMonitoring(unlockUntilMs: unlockUntilMs)
+      _ = scheduleRelockMonitoring(unlockUntilMs: unlockUntilMs)
     }
   }
 
@@ -745,7 +908,8 @@ private extension ScreenTimeBridge {
     shielded: Bool = false,
     message: String? = nil,
     code: String? = nil,
-    errorMessage: String? = nil
+    errorMessage: String? = nil,
+    relockMonitoringResult: RelockMonitoringResult? = nil
   ) -> [String: Any] {
     let currentSelection = selection ?? loadSelection()
     var payload = selectionPayload(completed: true, selection: currentSelection)
@@ -760,6 +924,26 @@ private extension ScreenTimeBridge {
     }
     if let errorMessage {
       payload["errorMessage"] = errorMessage
+    }
+    if let relockMonitoringResult {
+      payload["nativeRelockScheduled"] = relockMonitoringResult.scheduled
+      payload["nativeRelockRequestedUnlockUntilMs"] =
+        relockMonitoringResult.requestedUnlockUntilMs
+      payload["nativeRelockMonitorUntilMs"] = relockMonitoringResult.monitorUntilMs
+      payload["nativeRelockUsedMinimumFallback"] =
+        relockMonitoringResult.usedMinimumFallback
+      payload["nativeRelockEventScheduled"] = relockMonitoringResult.eventScheduled
+      payload["nativeRelockEventThresholdMs"] =
+        relockMonitoringResult.eventThresholdMs
+      payload["nativeRelockEventApplicationCount"] =
+        relockMonitoringResult.eventApplicationCount
+      payload["nativeRelockEventCategoryCount"] =
+        relockMonitoringResult.eventCategoryCount
+      payload["nativeRelockEventWebDomainCount"] =
+        relockMonitoringResult.eventWebDomainCount
+      if let monitorErrorMessage = relockMonitoringResult.errorMessage {
+        payload["nativeRelockErrorMessage"] = monitorErrorMessage
+      }
     }
     return payload
   }

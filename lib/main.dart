@@ -435,12 +435,10 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   // =========================
   // Hint + Skip ads
   // =========================
-  static const String _testRewardedAdUnitId =
+  static const String _androidDefaultRewardedAdUnitId =
       "ca-app-pub-8108010703558411/1847579539";
-  static const String _productionRewardedAdUnitId =
-      "ca-app-pub-8108010703558411/1847579539";
-  static const String _iosDebugRewardedTestAdUnitId =
-      "ca-app-pub-3940256099942544/1712485313";
+  static const String _iosDefaultRewardedAdUnitId =
+      "ca-app-pub-8108010703558411/5800977815";
   static const String _configuredRewardedAdUnitId = String.fromEnvironment(
     "CHESSUNLOCK_REWARDED_AD_UNIT_ID",
   );
@@ -530,7 +528,6 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
     await _loadQueuesFromPrefs(); // ✅ load stored queues
     if (!mounted) return;
-
     final puzzleLoad = _showNextPuzzleForCurrentDifficulty(
       reason: "init",
     ).catchError((Object error, StackTrace stackTrace) {
@@ -740,6 +737,10 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
         }
       }).whenComplete(() => _syncExpiryInFlight = false),
     );
+  }
+
+  void _debugUnlock(String message) {
+    debugPrint("[unlock] $message");
   }
 
   bool get _isBlackToMove => _isBlackToMoveFromFen(_positionFen);
@@ -1369,6 +1370,10 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
     final until = _unlockedUntil;
     if (until != null && DateTime.now().isAfter(until)) {
+      _debugUnlock(
+        "real unlock expiry reached; expiryMs=${until.millisecondsSinceEpoch} "
+        "nowMs=${DateTime.now().millisecondsSinceEpoch}",
+      );
       final saved = await _relockNow(resetPuzzle: true);
       if (mounted && saved) {
         AppAnalytics.unlockExpired();
@@ -1396,7 +1401,15 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
         await _syncLockStateToStorageAndWatcher(includeUnlockState: true);
 
     if (saved) {
-      await _appLock.relockNow();
+      try {
+        await _appLock.relockNow();
+        _debugUnlock("relock/apply shield completed from relockNow");
+      } catch (error) {
+        _debugUnlock(
+          "relock/apply shield failed from relockNow; error=$error",
+        );
+        rethrow;
+      }
     }
 
     if (resetPuzzle) {
@@ -1413,6 +1426,10 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     } else {
       _indefiniteUnlock = false;
       _unlockedUntil = DateTime.now().add(Duration(minutes: minutes));
+      _debugUnlock(
+        "unlock duration selected; minutes=$minutes "
+        "realExpiryMs=${_unlockedUntil!.millisecondsSinceEpoch}",
+      );
     }
 
     _lockEnabled = false;
@@ -1783,11 +1800,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
         return configured;
       }
 
-      if (kReleaseMode) {
-        return _productionRewardedAdUnitId;
-      }
-
-      return _iosDebugRewardedTestAdUnitId;
+      return _iosDefaultRewardedAdUnitId;
     }
 
     final configuredAndroid = _configuredAndroidRewardedAdUnitId.trim();
@@ -1800,10 +1813,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       return configured;
     }
 
-    if (kReleaseMode) {
-      return _productionRewardedAdUnitId;
-    }
-    return _testRewardedAdUnitId;
+    return _androidDefaultRewardedAdUnitId;
   }
 
   String get _rewardedAdUnitSource {
@@ -1814,7 +1824,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       if (_configuredRewardedAdUnitId.trim().isNotEmpty) {
         return "shared-dart-define";
       }
-      return kReleaseMode ? "shared-release-default" : "ios-debug-test";
+      return "ios-default";
     }
 
     if (defaultTargetPlatform == TargetPlatform.android &&
@@ -1824,7 +1834,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     if (_configuredRewardedAdUnitId.trim().isNotEmpty) {
       return "shared-dart-define";
     }
-    return kReleaseMode ? "shared-release-default" : "shared-debug-default";
+    return "android-default";
   }
 
   String get _rewardedPlatformLabel {
@@ -2381,20 +2391,12 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     );
 
     if (defaultTargetPlatform == TargetPlatform.iOS &&
-        _rewardedAdUnitSource == "ios-debug-test") {
-      _debugRewarded(
-        "debug iOS is using Google's official rewarded test ad unit. "
-        "Set CHESSUNLOCK_IOS_REWARDED_AD_UNIT_ID for a real iOS ad unit.",
-      );
-    }
-
-    if (defaultTargetPlatform == TargetPlatform.iOS &&
         kReleaseMode &&
         _configuredIosRewardedAdUnitId.trim().isEmpty &&
         _configuredRewardedAdUnitId.trim().isEmpty) {
       _debugRewarded(
-        "release iOS is using the shared rewarded ad unit id. "
-        "Verify this is an iOS rewarded ad unit in AdMob, or pass "
+        "release iOS is using the default iOS rewarded ad unit id. "
+        "Pass "
         "CHESSUNLOCK_IOS_REWARDED_AD_UNIT_ID.",
       );
     }
@@ -2583,7 +2585,9 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       return;
     }
 
-    int selected = 10;
+    const minUnlockMinutes = 1;
+    const maxUnlockMinutes = 15;
+    var selected = 10.clamp(minUnlockMinutes, maxUnlockMinutes).toInt();
 
     await showModalBottomSheet<void>(
       context: context,
@@ -2636,31 +2640,11 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
                       Border.all(color: cs.outlineVariant.withOpacity(0.45)),
                 ),
                 height: 180,
-                child: CupertinoTheme(
-                  data: CupertinoThemeData(
-                    brightness: Theme.of(ctx).brightness,
-                    textTheme: CupertinoTextThemeData(
-                      pickerTextStyle: TextStyle(
-                        color: cs.onSurface,
-                        fontSize: 20,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                  child: CupertinoPicker(
-                    itemExtent: 42,
-                    magnification: 1.08,
-                    squeeze: 1.15,
-                    useMagnifier: true,
-                    scrollController: FixedExtentScrollController(
-                      initialItem: (selected - 1).clamp(0, 14),
-                    ),
-                    onSelectedItemChanged: (i) => selected = i + 1,
-                    children: List.generate(
-                      15,
-                      (i) => Center(child: Text("${i + 1} min")),
-                    ),
-                  ),
+                child: _UnlockDurationWheelPicker(
+                  minMinutes: minUnlockMinutes,
+                  maxMinutes: maxUnlockMinutes,
+                  initialMinutes: selected,
+                  onChanged: (minutes) => selected = minutes,
                 ),
               ),
               const SizedBox(height: 10),
@@ -3135,6 +3119,58 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       bottomNavigationBar: PremiumNavBar(
         index: _tab,
         onChanged: _selectTab,
+      ),
+    );
+  }
+}
+
+class _UnlockDurationWheelPicker extends StatelessWidget {
+  const _UnlockDurationWheelPicker({
+    required this.minMinutes,
+    required this.maxMinutes,
+    required this.initialMinutes,
+    required this.onChanged,
+  });
+
+  final int minMinutes;
+  final int maxMinutes;
+  final int initialMinutes;
+  final ValueChanged<int> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final initialItem = (initialMinutes - minMinutes)
+        .clamp(
+          0,
+          maxMinutes - minMinutes,
+        )
+        .toInt();
+
+    return CupertinoTheme(
+      data: CupertinoThemeData(
+        brightness: Theme.of(context).brightness,
+        textTheme: CupertinoTextThemeData(
+          pickerTextStyle: TextStyle(
+            color: cs.onSurface,
+            fontSize: 20,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+      child: CupertinoPicker(
+        itemExtent: 42,
+        magnification: 1.08,
+        squeeze: 1.15,
+        useMagnifier: true,
+        scrollController: FixedExtentScrollController(
+          initialItem: initialItem,
+        ),
+        onSelectedItemChanged: (i) => onChanged(minMinutes + i),
+        children: List.generate(
+          maxMinutes - minMinutes + 1,
+          (i) => Center(child: Text("${minMinutes + i} min")),
+        ),
       ),
     );
   }

@@ -1,4 +1,4 @@
-# chessUnlock
+# ChessUnlock
 This is the first commit of this project
 in this version the app is working fine and ads are running but there are some issues like branch ads are only loading the first time when the app is opened i think the issue is that the app is not refreshihng the ads or it's not requesting the ads freaquently 
 there is one more issue that when the user watches the ad and the hint is showed on screen the time that user takes to vome back the hint is almost vanished it should either start when the user is back to the puzzle page or the hint should not highlight the square for a few seconds but it should stay until the user makes the next move

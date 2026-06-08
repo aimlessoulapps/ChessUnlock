@@ -171,10 +171,10 @@ class BannerAdSlot extends StatefulWidget {
 
 class _BannerAdSlotState extends State<BannerAdSlot>
     with WidgetsBindingObserver {
-  static const _androidTestBannerAdUnitId =
-      "ca-app-pub-3940256099942544/6300978111";
-  static const _iosTestBannerAdUnitId =
-      "ca-app-pub-3940256099942544/2934735716";
+  static const _androidDefaultBannerAdUnitId =
+      "ca-app-pub-8108010703558411/9765598008";
+  static const _iosDefaultBannerAdUnitId =
+      "ca-app-pub-8108010703558411/5013979522";
   static const _configuredBannerAdUnitId = String.fromEnvironment(
     "CHESSUNLOCK_BANNER_AD_UNIT_ID",
   );
@@ -192,6 +192,7 @@ class _BannerAdSlotState extends State<BannerAdSlot>
   Timer? _retryTimer;
   Timer? _activeCheckTimer;
   bool _loggedInvalidBannerAdUnitId = false;
+  bool _loggedBannerConfiguration = false;
 
   bool get _adsSupported =>
       !kIsWeb &&
@@ -204,9 +205,27 @@ class _BannerAdSlotState extends State<BannerAdSlot>
       return configured;
     }
     if (defaultTargetPlatform == TargetPlatform.iOS) {
-      return _iosTestBannerAdUnitId;
+      return _iosDefaultBannerAdUnitId;
     }
-    return _androidTestBannerAdUnitId;
+    return _androidDefaultBannerAdUnitId;
+  }
+
+  String get _bannerAdUnitSource {
+    if (_configuredBannerAdUnitId.trim().isNotEmpty) {
+      return "dart-define";
+    }
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      return "ios-default";
+    }
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return "android-default";
+    }
+    return "unsupported-default";
+  }
+
+  String get _bannerPlatformLabel {
+    if (kIsWeb) return "web";
+    return defaultTargetPlatform.name;
   }
 
   bool get _hasUsableBannerAdUnitId => _isValidAdUnitId(_bannerAdUnitId);
@@ -222,6 +241,8 @@ class _BannerAdSlotState extends State<BannerAdSlot>
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      _debugBannerConfigurationIfNeeded();
+      _debugBannerVisibility("init");
       _syncActiveBannerState(reason: "init");
     });
   }
@@ -230,6 +251,9 @@ class _BannerAdSlotState extends State<BannerAdSlot>
   void didUpdateWidget(covariant BannerAdSlot oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.active != widget.active) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _debugBannerVisibility("active_changed");
+      });
       _syncActiveBannerState(
         reason: widget.active ? "screen_visible" : "screen_hidden",
       );
@@ -237,6 +261,9 @@ class _BannerAdSlotState extends State<BannerAdSlot>
     }
 
     if (widget.active) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _debugBannerVisibility("widget_update");
+      });
       _syncActiveBannerState(reason: "widget_update");
     }
   }
@@ -270,6 +297,8 @@ class _BannerAdSlotState extends State<BannerAdSlot>
 
   void _ensureBannerAdLoaded({required String reason}) {
     if (!_adsSupported || !widget.active || !_appResumed) return;
+
+    _debugBannerConfigurationIfNeeded();
 
     if (!_hasUsableBannerAdUnitId) {
       _debugInvalidBannerAdUnitId();
@@ -363,7 +392,9 @@ class _BannerAdSlotState extends State<BannerAdSlot>
     _nextRetryAt = null;
 
     _debugBanner(
-      "banner load started; reason=$reason adUnitId=$_bannerAdUnitId",
+      "banner load started; platform=$_bannerPlatformLabel "
+      "source=$_bannerAdUnitSource reason=$reason "
+      "adUnitId=$_bannerAdUnitId",
     );
     final ad = BannerAd(
       adUnitId: _bannerAdUnitId,
@@ -379,7 +410,8 @@ class _BannerAdSlotState extends State<BannerAdSlot>
             return;
           }
           _debugBanner(
-            "banner loaded; adUnitId=$_bannerAdUnitId "
+            "banner loaded; platform=$_bannerPlatformLabel "
+            "source=$_bannerAdUnitSource adUnitId=$_bannerAdUnitId "
             "responseInfo=${ad.responseInfo}",
           );
           setState(() {
@@ -388,6 +420,9 @@ class _BannerAdSlotState extends State<BannerAdSlot>
             _loading = false;
             _nextRetryAt = null;
             _retryDelay = _initialRetryDelay;
+          });
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _debugBannerVisibility("loaded");
           });
         },
         onAdFailedToLoad: (ad, error) {
@@ -451,13 +486,34 @@ class _BannerAdSlotState extends State<BannerAdSlot>
     );
   }
 
+  void _debugBannerConfigurationIfNeeded() {
+    if (_loggedBannerConfiguration) return;
+    _loggedBannerConfiguration = true;
+    _debugBanner(
+      "banner configuration; platform=$_bannerPlatformLabel "
+      "source=$_bannerAdUnitSource adUnitId=$_bannerAdUnitId "
+      "supported=$_adsSupported",
+    );
+  }
+
+  void _debugBannerVisibility(String reason) {
+    final renderSize = context.size;
+    _debugBanner(
+      "banner visibility; reason=$reason active=${widget.active} "
+      "appResumed=$_appResumed loaded=$_loaded "
+      "height=${widget.height} nonZeroHeight=${widget.height > 0} "
+      "renderSize=$renderSize",
+    );
+  }
+
   void _debugBanner(String message) {
     debugPrint("[ads][banner][${widget.screenName}] $message");
   }
 
   void _debugBannerLoadError(String prefix, LoadAdError error) {
     _debugBanner(
-      "$prefix; adUnitId=$_bannerAdUnitId "
+      "$prefix; platform=$_bannerPlatformLabel "
+      "source=$_bannerAdUnitSource adUnitId=$_bannerAdUnitId "
       "error.code=${error.code} "
       "error.domain=${error.domain} "
       "error.message=${error.message} "
@@ -688,11 +744,12 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                         options: const [
                           "Instagram",
                           "YouTube",
+                          "YouTube Shorts",
                           "Reddit",
                           "Discord",
-                          "Games",
-                          "Messaging",
-                          "Short videos",
+                          "Snapchat",
+                          "X / Twitter",
+                          "WhatsApp",
                           "Other",
                         ],
                         selected: _answers["distraction"],
@@ -749,10 +806,10 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                             ? Icons.ios_share_rounded
                             : Icons.security_rounded,
                         title: defaultTargetPlatform == TargetPlatform.iOS
-                            ? "Enable Screen Time Access"
+                            ? "Why we need Screen Time permission"
                             : "Enable App Lock Permissions",
                         body: defaultTargetPlatform == TargetPlatform.iOS
-                            ? "ChessUnlock uses Screen Time permission to lock the apps you choose. Your selected apps stay private on your device."
+                            ? "ChessUnlock needs Screen Time permission so it can let you choose distracting apps and lock them until you solve a chess puzzle. Your selected apps are used for the locking feature, not to spy on your personal content."
                             : "ChessUnlock needs Usage Access and overlay permission to detect locked apps and show the puzzle screen when you open them.",
                         textColor: text,
                         mutedColor: muted,

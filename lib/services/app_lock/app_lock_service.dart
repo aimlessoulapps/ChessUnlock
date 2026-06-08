@@ -549,7 +549,22 @@ class IosScreenTimeAppLockService extends AppLockService {
       "apps=${payload["applicationCount"]} "
       "categories=${payload["categoryCount"]} "
       "webDomains=${payload["webDomainCount"]} "
-      "code=${payload["code"]}",
+      "code=${payload["code"]} "
+      "nativeRelockScheduled=${payload["nativeRelockScheduled"]} "
+      "nativeRelockRequestedUnlockUntilMs="
+      "${payload["nativeRelockRequestedUnlockUntilMs"]} "
+      "nativeRelockMonitorUntilMs=${payload["nativeRelockMonitorUntilMs"]} "
+      "nativeRelockUsedMinimumFallback="
+      "${payload["nativeRelockUsedMinimumFallback"]} "
+      "nativeRelockEventScheduled=${payload["nativeRelockEventScheduled"]} "
+      "nativeRelockEventThresholdMs="
+      "${payload["nativeRelockEventThresholdMs"]} "
+      "nativeRelockEventApps=${payload["nativeRelockEventApplicationCount"]} "
+      "nativeRelockEventCategories="
+      "${payload["nativeRelockEventCategoryCount"]} "
+      "nativeRelockEventWebDomains="
+      "${payload["nativeRelockEventWebDomainCount"]} "
+      "nativeRelockError=${payload["nativeRelockErrorMessage"]}",
     );
     if (payload["success"] == false) {
       throw PlatformException(
