@@ -104,15 +104,15 @@ class PremiumNavBar extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
         child: Container(
           decoration: BoxDecoration(
-            color: cs.surfaceContainerHighest.withOpacity(0.72),
+            color: cs.surfaceContainerHighest.withValues(alpha: 0.72),
             borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: cs.outlineVariant.withOpacity(0.45)),
+            border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.45)),
             boxShadow: [
               BoxShadow(
                 blurRadius: 18,
                 spreadRadius: 0,
-                color: Colors.black.withOpacity(
-                    Theme.of(context).brightness == Brightness.dark
+                color: Colors.black.withValues(
+                    alpha: Theme.of(context).brightness == Brightness.dark
                         ? 0.35
                         : 0.10),
                 offset: const Offset(0, 10),
@@ -156,12 +156,14 @@ class PremiumNavBar extends StatelessWidget {
 class BannerAdSlot extends StatefulWidget {
   final double height;
   final bool active;
+  final bool prewarm;
   final String screenName;
 
   const BannerAdSlot({
     super.key,
     this.height = 60,
     this.active = true,
+    this.prewarm = false,
     required this.screenName,
   });
 
@@ -180,7 +182,6 @@ class _BannerAdSlotState extends State<BannerAdSlot>
   );
   static const _initialRetryDelay = Duration(seconds: 30);
   static const _maxRetryDelay = Duration(minutes: 5);
-  static const _activeCheckInterval = Duration(seconds: 60);
 
   BannerAd? _bannerAd;
   BannerAd? _loadingBannerAd;
@@ -190,7 +191,6 @@ class _BannerAdSlotState extends State<BannerAdSlot>
   DateTime? _nextRetryAt;
   Duration _retryDelay = _initialRetryDelay;
   Timer? _retryTimer;
-  Timer? _activeCheckTimer;
   bool _loggedInvalidBannerAdUnitId = false;
   bool _loggedBannerConfiguration = false;
 
@@ -235,6 +235,8 @@ class _BannerAdSlotState extends State<BannerAdSlot>
 
   bool get _hasLoadedBanner => _loaded && _bannerAd != null;
 
+  bool get _canRequestBanner => widget.active || widget.prewarm;
+
   @override
   void initState() {
     super.initState();
@@ -243,28 +245,27 @@ class _BannerAdSlotState extends State<BannerAdSlot>
       if (!mounted) return;
       _debugBannerConfigurationIfNeeded();
       _debugBannerVisibility("init");
-      _syncActiveBannerState(reason: "init");
+      if (_canRequestBanner) {
+        _ensureBannerAdLoaded(reason: "init");
+      }
     });
   }
 
   @override
   void didUpdateWidget(covariant BannerAdSlot oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.active != widget.active) {
+    if (oldWidget.active != widget.active ||
+        oldWidget.prewarm != widget.prewarm) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _debugBannerVisibility("active_changed");
+        if (mounted) _debugBannerVisibility("request_state_changed");
       });
-      _syncActiveBannerState(
-        reason: widget.active ? "screen_visible" : "screen_hidden",
-      );
-      return;
-    }
-
-    if (widget.active) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _debugBannerVisibility("widget_update");
-      });
-      _syncActiveBannerState(reason: "widget_update");
+      if (_canRequestBanner) {
+        _ensureBannerAdLoaded(
+          reason: widget.active ? "screen_visible" : "deferred_prewarm",
+        );
+      } else {
+        _cancelRetryTimer();
+      }
     }
   }
 
@@ -273,30 +274,18 @@ class _BannerAdSlotState extends State<BannerAdSlot>
     if (state == AppLifecycleState.resumed) {
       _appResumed = true;
       _debugBanner("app resumed and banner checked");
-      _syncActiveBannerState(reason: "app_resumed");
+      if (_canRequestBanner) {
+        _ensureBannerAdLoaded(reason: "app_resumed");
+      }
     } else {
       _appResumed = false;
       _debugBanner("app paused; banner timers cancelled");
       _cancelRetryTimer();
-      _stopActiveCheckTimer();
     }
-  }
-
-  void _syncActiveBannerState({required String reason}) {
-    if (!_adsSupported || !widget.active || !_appResumed) {
-      _stopActiveCheckTimer();
-      if (!widget.active || !_appResumed) {
-        _cancelRetryTimer();
-      }
-      return;
-    }
-
-    _startActiveCheckTimer();
-    _ensureBannerAdLoaded(reason: reason);
   }
 
   void _ensureBannerAdLoaded({required String reason}) {
-    if (!_adsSupported || !widget.active || !_appResumed) return;
+    if (!_adsSupported || !_canRequestBanner || !_appResumed) return;
 
     _debugBannerConfigurationIfNeeded();
 
@@ -307,7 +296,7 @@ class _BannerAdSlotState extends State<BannerAdSlot>
 
     if (_hasLoadedBanner) {
       _debugBanner(
-        "banner retry skipped because an ad is already loaded; "
+        "banner load skipped because an ad is already loaded; "
         "reason=$reason adUnitId=$_bannerAdUnitId",
       );
       return;
@@ -315,7 +304,7 @@ class _BannerAdSlotState extends State<BannerAdSlot>
 
     if (_loading) {
       _debugBanner(
-        "banner retry skipped because an ad is already loading; "
+        "banner load skipped because an ad is already loading; "
         "reason=$reason adUnitId=$_bannerAdUnitId",
       );
       return;
@@ -325,6 +314,11 @@ class _BannerAdSlotState extends State<BannerAdSlot>
     if (nextRetryAt != null) {
       final remaining = nextRetryAt.difference(DateTime.now());
       if (remaining > Duration.zero) {
+        _debugBanner(
+          "banner load skipped because retry backoff is active; "
+          "reason=$reason remaining=${remaining.inSeconds}s "
+          "adUnitId=$_bannerAdUnitId",
+        );
         _scheduleRetry(remaining, reason: "retry_wait:$reason");
         return;
       }
@@ -333,25 +327,9 @@ class _BannerAdSlotState extends State<BannerAdSlot>
     _loadBannerAd(reason: reason);
   }
 
-  void _startActiveCheckTimer() {
-    if (_activeCheckTimer != null) return;
-    _activeCheckTimer = Timer.periodic(_activeCheckInterval, (_) {
-      if (!mounted) return;
-      _debugBanner(
-        "banner refresh/check timer tick; adUnitId=$_bannerAdUnitId",
-      );
-      _ensureBannerAdLoaded(reason: "active_check_timer");
-    });
-  }
-
-  void _stopActiveCheckTimer() {
-    _activeCheckTimer?.cancel();
-    _activeCheckTimer = null;
-  }
-
   void _scheduleRetry(Duration delay, {required String reason}) {
     if (!_adsSupported ||
-        !widget.active ||
+        !_canRequestBanner ||
         !_appResumed ||
         _hasLoadedBanner ||
         _loading) {
@@ -361,7 +339,13 @@ class _BannerAdSlotState extends State<BannerAdSlot>
       );
       return;
     }
-    if (_retryTimer != null) return;
+    if (_retryTimer != null) {
+      _debugBanner(
+        "banner retry skipped because retry is already scheduled; "
+        "reason=$reason adUnitId=$_bannerAdUnitId",
+      );
+      return;
+    }
 
     _debugBanner(
       "banner retry scheduled in ${delay.inSeconds}s; "
@@ -381,7 +365,13 @@ class _BannerAdSlotState extends State<BannerAdSlot>
   }
 
   void _loadBannerAd({required String reason}) {
-    if (!_adsSupported || !_appResumed || _loading || _hasLoadedBanner) return;
+    if (!_adsSupported ||
+        !_canRequestBanner ||
+        !_appResumed ||
+        _loading ||
+        _hasLoadedBanner) {
+      return;
+    }
     if (!_hasUsableBannerAdUnitId) {
       _debugInvalidBannerAdUnitId();
       return;
@@ -471,7 +461,6 @@ class _BannerAdSlotState extends State<BannerAdSlot>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _cancelRetryTimer();
-    _stopActiveCheckTimer();
     _loadingBannerAd?.dispose();
     _disposeLoadedBanner();
     super.dispose();
@@ -500,7 +489,7 @@ class _BannerAdSlotState extends State<BannerAdSlot>
     final renderSize = context.size;
     _debugBanner(
       "banner visibility; reason=$reason active=${widget.active} "
-      "appResumed=$_appResumed loaded=$_loaded "
+      "prewarm=${widget.prewarm} appResumed=$_appResumed loaded=$_loaded "
       "height=${widget.height} nonZeroHeight=${widget.height > 0} "
       "renderSize=$renderSize",
     );
@@ -543,12 +532,14 @@ class _BannerAdSlotState extends State<BannerAdSlot>
 class ScreenAdHeader extends StatelessWidget {
   final String title;
   final bool active;
+  final bool prewarmBanner;
   final String screenName;
 
   const ScreenAdHeader({
     super.key,
     required this.title,
     required this.active,
+    this.prewarmBanner = false,
     required this.screenName,
   });
 
@@ -566,8 +557,10 @@ class ScreenAdHeader extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         BannerAdSlot(
+          key: ValueKey("banner-ad-slot-$screenName"),
           height: 54,
           active: active,
+          prewarm: prewarmBanner,
           screenName: screenName,
         ),
         const SizedBox(height: 8),
@@ -712,7 +705,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                     physics: const NeverScrollableScrollPhysics(),
                     onPageChanged: (page) => setState(() => _page = page),
                     children: [
-                      _OnboardingCopyPage(
+                      const _OnboardingCopyPage(
                         icon: Icons.lock_open_rounded,
                         title: "Welcome to ChessUnlock",
                         body:
@@ -792,7 +785,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                         cardColor: card,
                         selectedColor: green,
                       ),
-                      _OnboardingCopyPage(
+                      const _OnboardingCopyPage(
                         icon: Icons.psychology_alt_rounded,
                         title: "Small puzzles. Real progress.",
                         body:
@@ -815,7 +808,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                         mutedColor: muted,
                         accentColor: green,
                       ),
-                      _OnboardingCopyPage(
+                      const _OnboardingCopyPage(
                         icon: Icons.check_circle_rounded,
                         title: "You're ready.",
                         body:
@@ -933,12 +926,12 @@ class _OnboardingCopyPage extends StatelessWidget {
                 width: 74,
                 height: 74,
                 decoration: BoxDecoration(
-                  color: accentColor.withOpacity(0.14),
+                  color: accentColor.withValues(alpha: 0.14),
                   borderRadius: BorderRadius.circular(26),
-                  border: Border.all(color: accentColor.withOpacity(0.28)),
+                  border: Border.all(color: accentColor.withValues(alpha: 0.28)),
                   boxShadow: [
                     BoxShadow(
-                      color: accentColor.withOpacity(0.16),
+                      color: accentColor.withValues(alpha: 0.16),
                       blurRadius: 34,
                       offset: const Offset(0, 18),
                     ),
@@ -1028,17 +1021,17 @@ class _QuestionPage extends StatelessWidget {
                       ),
                       decoration: BoxDecoration(
                         color: isSelected
-                            ? selectedColor.withOpacity(0.14)
+                            ? selectedColor.withValues(alpha: 0.14)
                             : cardColor,
                         borderRadius: BorderRadius.circular(20),
                         border: Border.all(
                           color: isSelected
-                              ? selectedColor.withOpacity(0.8)
-                              : Colors.white.withOpacity(0.08),
+                              ? selectedColor.withValues(alpha: 0.8)
+                              : Colors.white.withValues(alpha: 0.08),
                         ),
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withOpacity(0.22),
+                            color: Colors.black.withValues(alpha: 0.22),
                             blurRadius: 20,
                             offset: const Offset(0, 10),
                           ),
@@ -1080,6 +1073,7 @@ class _QuestionPage extends StatelessWidget {
 
 class HomeTab extends StatelessWidget {
   final bool active;
+  final bool prewarmBanner;
   final bool lockEnabled;
   final bool indefiniteUnlock;
   final Duration unlockRemaining;
@@ -1107,6 +1101,7 @@ class HomeTab extends StatelessWidget {
   const HomeTab({
     super.key,
     required this.active,
+    required this.prewarmBanner,
     required this.lockEnabled,
     required this.indefiniteUnlock,
     required this.unlockRemaining,
@@ -1161,6 +1156,7 @@ class HomeTab extends StatelessWidget {
           ScreenAdHeader(
             title: "Lock Mode",
             active: active,
+            prewarmBanner: prewarmBanner,
             screenName: "home",
           ),
           Expanded(
@@ -1507,9 +1503,9 @@ class NativeSelectionFallbackSummary extends StatelessWidget {
                 ),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(12),
-                  color: cs.secondaryContainer.withOpacity(0.55),
+                  color: cs.secondaryContainer.withValues(alpha: 0.55),
                   border: Border.all(
-                    color: cs.outlineVariant.withOpacity(0.45),
+                    color: cs.outlineVariant.withValues(alpha: 0.45),
                   ),
                 ),
                 child: Row(
@@ -1543,6 +1539,7 @@ class NativeSelectionFallbackSummary extends StatelessWidget {
 // =========================
 class PuzzleTab extends StatelessWidget {
   final bool active;
+  final bool prewarmBanner;
   final ChessPuzzle? puzzle;
   final bool loading;
   final String? loadError;
@@ -1570,6 +1567,7 @@ class PuzzleTab extends StatelessWidget {
   const PuzzleTab({
     super.key,
     required this.active,
+    required this.prewarmBanner,
     required this.puzzle,
     required this.loading,
     required this.loadError,
@@ -1601,6 +1599,7 @@ class PuzzleTab extends StatelessWidget {
           ScreenAdHeader(
             title: "Puzzle",
             active: active,
+            prewarmBanner: prewarmBanner,
             screenName: "puzzle",
           ),
           if (loadError != null)
@@ -1648,10 +1647,10 @@ class PuzzleTab extends StatelessWidget {
                                 ),
                                 decoration: BoxDecoration(
                                   color: cs.surfaceContainerHighest
-                                      .withOpacity(0.38),
+                                      .withValues(alpha: 0.38),
                                   borderRadius: BorderRadius.circular(16),
                                   border: Border.all(
-                                    color: cs.outlineVariant.withOpacity(0.42),
+                                    color: cs.outlineVariant.withValues(alpha: 0.42),
                                   ),
                                 ),
                                 child: Row(
@@ -1680,9 +1679,9 @@ class PuzzleTab extends StatelessWidget {
                                         borderRadius:
                                             BorderRadius.circular(999),
                                         border: Border.all(
-                                          color: cs.primary.withOpacity(0.22),
+                                          color: cs.primary.withValues(alpha: 0.22),
                                         ),
-                                        color: cs.primary.withOpacity(0.10),
+                                        color: cs.primary.withValues(alpha: 0.10),
                                       ),
                                       child: Text(
                                         "Rating ${puzzle!.rating}",
@@ -1843,9 +1842,9 @@ class BoardWithHintOverlay extends StatelessWidget {
               child: IgnorePointer(
                 child: Container(
                   decoration: BoxDecoration(
-                    color: Colors.amber.withOpacity(0.45),
+                    color: Colors.amber.withValues(alpha: 0.45),
                     border: Border.all(
-                      color: Colors.amber.withOpacity(0.9),
+                      color: Colors.amber.withValues(alpha: 0.9),
                       width: 2,
                     ),
                   ),
@@ -1900,9 +1899,9 @@ class HintSkipButton extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
         decoration: BoxDecoration(
-          color: cs.surfaceContainerHighest.withOpacity(0.55),
+          color: cs.surfaceContainerHighest.withValues(alpha: 0.55),
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: cs.outlineVariant.withOpacity(0.45)),
+          border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.45)),
         ),
         child: Opacity(
           opacity: opacity,
@@ -1941,6 +1940,7 @@ class HintSkipButton extends StatelessWidget {
 // =========================
 class SettingsTab extends StatelessWidget {
   final bool active;
+  final bool prewarmBanner;
   final bool lockEnabled;
   final bool indefiniteUnlock;
   final Duration unlockRemaining;
@@ -1959,6 +1959,7 @@ class SettingsTab extends StatelessWidget {
   const SettingsTab({
     super.key,
     required this.active,
+    required this.prewarmBanner,
     required this.lockEnabled,
     required this.indefiniteUnlock,
     required this.unlockRemaining,
@@ -1990,6 +1991,7 @@ class SettingsTab extends StatelessWidget {
           ScreenAdHeader(
             title: "Settings",
             active: active,
+            prewarmBanner: prewarmBanner,
             screenName: "settings",
           ),
           Expanded(
@@ -2176,7 +2178,7 @@ class SettingsTab extends StatelessWidget {
                       ),
                       Divider(
                           height: 8,
-                          color: cs.outlineVariant.withOpacity(0.35)),
+                          color: cs.outlineVariant.withValues(alpha: 0.35)),
                       SettingsRow(
                         icon: Icons.star_rate_rounded,
                         title: "Rate the app",
@@ -2553,10 +2555,10 @@ class _AppSelectionPageState extends State<AppSelectionPage> {
                           width: double.infinity,
                           padding: const EdgeInsets.all(14),
                           decoration: BoxDecoration(
-                            color: cs.surfaceContainerHighest.withOpacity(0.62),
+                            color: cs.surfaceContainerHighest.withValues(alpha: 0.62),
                             borderRadius: BorderRadius.circular(20),
                             border: Border.all(
-                                color: cs.outlineVariant.withOpacity(0.45)),
+                                color: cs.outlineVariant.withValues(alpha: 0.45)),
                           ),
                           child: const Text("Editing disabled."),
                         ),
@@ -2583,7 +2585,7 @@ class _AppSelectionPageState extends State<AppSelectionPage> {
                           return Padding(
                             padding: const EdgeInsets.only(bottom: 10),
                             child: Material(
-                              color: cs.surfaceContainer.withOpacity(0.92),
+                              color: cs.surfaceContainer.withValues(alpha: 0.92),
                               borderRadius: BorderRadius.circular(20),
                               clipBehavior: Clip.antiAlias,
                               child: CheckboxListTile(
@@ -2619,11 +2621,11 @@ class _AppSelectionPageState extends State<AppSelectionPage> {
                                   height: 42,
                                   decoration: BoxDecoration(
                                     color: cs.surfaceContainerHighest
-                                        .withOpacity(0.65),
+                                        .withValues(alpha: 0.65),
                                     borderRadius: BorderRadius.circular(14),
                                     border: Border.all(
                                       color:
-                                          cs.outlineVariant.withOpacity(0.45),
+                                          cs.outlineVariant.withValues(alpha: 0.45),
                                     ),
                                   ),
                                   child: Center(
@@ -2674,16 +2676,16 @@ class GlassCard extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: cs.surfaceContainer.withOpacity(dark ? 0.92 : 0.98),
+        color: cs.surfaceContainer.withValues(alpha: dark ? 0.92 : 0.98),
         borderRadius: BorderRadius.circular(24),
         border: Border.all(
           color: dark
-              ? Colors.white.withOpacity(0.07)
-              : cs.outlineVariant.withOpacity(0.8),
+              ? Colors.white.withValues(alpha: 0.07)
+              : cs.outlineVariant.withValues(alpha: 0.8),
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(dark ? 0.26 : 0.07),
+            color: Colors.black.withValues(alpha: dark ? 0.26 : 0.07),
             blurRadius: 26,
             offset: const Offset(0, 14),
           ),
@@ -2701,7 +2703,7 @@ class StatusDot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final c = active ? cs.primary : cs.onSurfaceVariant.withOpacity(0.55);
+    final c = active ? cs.primary : cs.onSurfaceVariant.withValues(alpha: 0.55);
     return Container(
       width: 12,
       height: 12,
@@ -2712,7 +2714,7 @@ class StatusDot extends StatelessWidget {
         boxShadow: [
           BoxShadow(
             blurRadius: 10,
-            color: c.withOpacity(0.35),
+            color: c.withValues(alpha: 0.35),
           ),
         ],
       ),
@@ -2730,8 +2732,8 @@ class Pill extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final bg = active
-        ? cs.primary.withOpacity(0.14)
-        : cs.surfaceContainerHighest.withOpacity(0.35);
+        ? cs.primary.withValues(alpha: 0.14)
+        : cs.surfaceContainerHighest.withValues(alpha: 0.35);
     final fg = active ? cs.primary : cs.onSurfaceVariant;
 
     return Container(
@@ -2739,7 +2741,7 @@ class Pill extends StatelessWidget {
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: fg.withOpacity(0.22)),
+        border: Border.all(color: fg.withValues(alpha: 0.22)),
       ),
       child: Text(
         text,
@@ -2771,8 +2773,8 @@ class AppIconPill extends StatelessWidget {
       height: 38,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(14),
-        color: cs.surfaceContainerHighest.withOpacity(0.7),
-        border: Border.all(color: cs.primary.withOpacity(0.12)),
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.7),
+        border: Border.all(color: cs.primary.withValues(alpha: 0.12)),
       ),
       child: Center(
         child: (iconBytes != null && iconBytes!.isNotEmpty)
@@ -2815,9 +2817,9 @@ class StatChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
       decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest.withOpacity(0.48),
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.48),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: cs.outlineVariant.withOpacity(0.36)),
+        border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.36)),
       ),
       child: Row(
         children: [
@@ -2877,9 +2879,9 @@ class SettingsRow extends StatelessWidget {
               width: 38,
               height: 38,
               decoration: BoxDecoration(
-                color: cs.primary.withOpacity(0.10),
+                color: cs.primary.withValues(alpha: 0.10),
                 borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: cs.primary.withOpacity(0.16)),
+                border: Border.all(color: cs.primary.withValues(alpha: 0.16)),
               ),
               child: Icon(icon, color: cs.primary),
             ),
@@ -2934,9 +2936,9 @@ class ActionTile extends StatelessWidget {
         width: double.infinity,
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: cs.surfaceContainerHighest.withOpacity(0.40),
+          color: cs.surfaceContainerHighest.withValues(alpha: 0.40),
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: cs.outlineVariant.withOpacity(0.45)),
+          border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.45)),
         ),
         child: Row(
           children: [

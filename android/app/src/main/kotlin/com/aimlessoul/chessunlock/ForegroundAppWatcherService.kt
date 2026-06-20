@@ -17,6 +17,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
@@ -65,6 +66,7 @@ class ForegroundAppWatcherService : Service() {
     private var overlayShown = false
     private var overlayRoot: FrameLayout? = null
     private var overlaySubtitle: TextView? = null
+    private var overlayEmergencyButton: Button? = null
     private var overlayBlockedPkg: String? = null
     private lateinit var wm: WindowManager
 
@@ -100,7 +102,8 @@ class ForegroundAppWatcherService : Service() {
 
                 val shouldBlock = enforceNow &&
                         current != null &&
-                        locked.contains(current)
+                        locked.contains(current) &&
+                        !PrefBridge.isEmergencyUnlocked(this@ForegroundAppWatcherService, current)
 
                 if (!shouldBlock || now < suppressOverlayUntilMs) {
                     clearPendingBlockedPackage()
@@ -133,7 +136,8 @@ class ForegroundAppWatcherService : Service() {
                 val confirmed = getForegroundPackage()
                 if (confirmed == blockedPkg &&
                     confirmed != packageName &&
-                    locked.contains(confirmed)
+                    locked.contains(confirmed) &&
+                    !PrefBridge.isEmergencyUnlocked(this@ForegroundAppWatcherService, confirmed)
                 ) {
                     showOverlay(confirmed)
                     scheduleNext(450)
@@ -330,6 +334,21 @@ class ForegroundAppWatcherService : Service() {
             handler.postDelayed(tick, 300)
         }
 
+        val emergencyBtn = Button(this)
+        emergencyBtn.text = "Emergency 1 min"
+        emergencyBtn.isAllCaps = false
+        emergencyBtn.textSize = 15f
+        emergencyBtn.typeface = Typeface.DEFAULT_BOLD
+        emergencyBtn.setTextColor(0xFF43D66E.toInt())
+        val emergencyBtnBg = GradientDrawable()
+        emergencyBtnBg.cornerRadius = dp(18).toFloat()
+        emergencyBtnBg.setColor(0x00151A17)
+        emergencyBtnBg.setStroke(dp(1), 0x6643D66E)
+        emergencyBtn.background = emergencyBtnBg
+        emergencyBtn.setOnClickListener {
+            handleEmergencyUnlockTap(blockedPkg)
+        }
+
         val iconFrameLp = LinearLayout.LayoutParams(dp(76), dp(76))
         card.addView(iconFrame, iconFrameLp)
         card.addView(title)
@@ -339,6 +358,12 @@ class ForegroundAppWatcherService : Service() {
             dp(54)
         )
         card.addView(btn, btnLp)
+        val emergencyBtnLp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            dp(50)
+        )
+        emergencyBtnLp.topMargin = dp(10)
+        card.addView(emergencyBtn, emergencyBtnLp)
 
         val lpCard = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
@@ -372,6 +397,7 @@ class ForegroundAppWatcherService : Service() {
         wm.addView(root, params)
         overlayRoot = root
         overlaySubtitle = subtitle
+        overlayEmergencyButton = emergencyBtn
         overlayBlockedPkg = blockedPkg
         overlayShown = true
         CrashlyticsLogger.overlayShown()
@@ -381,6 +407,9 @@ class ForegroundAppWatcherService : Service() {
     private fun updateOverlayText(blockedPkg: String) {
         if (overlayBlockedPkg == blockedPkg) return
         overlaySubtitle?.text = overlaySubtitleText()
+        overlayEmergencyButton?.setOnClickListener {
+            handleEmergencyUnlockTap(blockedPkg)
+        }
         overlayBlockedPkg = blockedPkg
     }
 
@@ -400,8 +429,35 @@ class ForegroundAppWatcherService : Service() {
         } finally {
             overlayRoot = null
             overlaySubtitle = null
+            overlayEmergencyButton = null
             overlayBlockedPkg = null
             overlayShown = false
+        }
+    }
+
+    private fun handleEmergencyUnlockTap(blockedPkg: String) {
+        when (PrefBridge.tryUseEmergencyUnlock(this, blockedPkg)) {
+            PrefBridge.EmergencyUnlockResult.UNLOCKED -> {
+                Toast.makeText(this, "Emergency unlock started for 1 minute.", Toast.LENGTH_SHORT).show()
+                clearPendingBlockedPackage()
+                hideOverlay()
+                handler.postDelayed(tick, 300)
+            }
+            PrefBridge.EmergencyUnlockResult.NOT_PREMIUM -> {
+                Toast.makeText(this, "ChessUnlock Premium required.", Toast.LENGTH_SHORT).show()
+                clearPendingBlockedPackage()
+                suppressOverlayUntilMs = System.currentTimeMillis() + SELF_OPEN_SUPPRESS_MS
+                lastPkg = packageName
+                hideOverlay()
+                PrefBridge.requestOpenPaywall(this)
+                val i = Intent(this, MainActivity::class.java)
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                startActivity(i)
+                handler.postDelayed(tick, 300)
+            }
+            PrefBridge.EmergencyUnlockResult.LIMIT_REACHED -> {
+                Toast.makeText(this, "Emergency unlock limit reached for today.", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 

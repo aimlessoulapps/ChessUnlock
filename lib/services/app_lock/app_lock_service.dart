@@ -23,12 +23,20 @@ class AppLockStateSnapshot {
     required this.lockEnabled,
     required this.indefiniteUnlock,
     required this.unlockUntilMs,
+    this.premiumActive = false,
+    this.emergencyUnlockDayKey = "",
+    this.emergencyUnlockCount = 0,
+    this.emergencyUnlockDailyLimit = 0,
   });
 
   final Set<String> lockedAppIds;
   final bool lockEnabled;
   final bool indefiniteUnlock;
   final int unlockUntilMs;
+  final bool premiumActive;
+  final String emergencyUnlockDayKey;
+  final int emergencyUnlockCount;
+  final int emergencyUnlockDailyLimit;
 }
 
 class NativeAppSelectionResult {
@@ -83,6 +91,8 @@ abstract class AppLockService {
       "App locking isn't available on this platform yet.";
 
   Future<bool> consumeOpenPuzzleRequest() async => false;
+
+  Future<bool> consumeOpenPaywallRequest() async => false;
 
   Future<String?> getOwnAppId() async => null;
 
@@ -160,6 +170,16 @@ class AndroidAppLockService extends AppLockService {
   }
 
   @override
+  Future<bool> consumeOpenPaywallRequest() async {
+    try {
+      return await _channel.invokeMethod<bool>("consumeOpenPaywallRequest") ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
   Future<String?> getOwnAppId() async {
     final cached = _ownAppId;
     if (cached != null && cached.isNotEmpty) return cached;
@@ -216,6 +236,10 @@ class AndroidAppLockService extends AppLockService {
         "lockEnabled": snapshot.lockEnabled,
         "indefiniteUnlock": snapshot.indefiniteUnlock,
         "unlockUntilMs": snapshot.unlockUntilMs,
+        "premiumActive": snapshot.premiumActive,
+        "emergencyUnlockDayKey": snapshot.emergencyUnlockDayKey,
+        "emergencyUnlockCount": snapshot.emergencyUnlockCount,
+        "emergencyUnlockDailyLimit": snapshot.emergencyUnlockDailyLimit,
       });
     } catch (_) {}
   }

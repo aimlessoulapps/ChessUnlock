@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
 import org.json.JSONArray
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 object PrefBridge {
     private const val FLUTTER_PREFS = "FlutterSharedPreferences"
@@ -15,6 +18,26 @@ object PrefBridge {
     private const val K_INDEF_UNLOCK = "indefUnlock"
     private const val K_LOCK_ENABLED = "lockEnabled"
     private const val K_OPEN_PUZZLE_REQUESTED = "openPuzzleRequested"
+    private const val K_OPEN_PAYWALL_REQUESTED = "openPaywallRequested"
+    private const val K_PREMIUM_ACTIVE = "premiumActive"
+    private const val K_EMERGENCY_UNLOCK_DAY_KEY = "emergencyUnlockDayKey"
+    private const val K_EMERGENCY_UNLOCK_COUNT = "emergencyUnlockCount"
+    private const val K_EMERGENCY_UNLOCK_DAILY_LIMIT = "emergencyUnlockDailyLimit"
+    private const val K_EMERGENCY_UNLOCK_PACKAGE = "emergencyUnlockPackage"
+    private const val K_EMERGENCY_UNLOCK_UNTIL_MS = "emergencyUnlockUntilMs"
+
+    private const val FLUTTER_EMERGENCY_UNLOCK_DAY_KEY =
+        "flutter.premium.emergencyUnlock.dayKey.v1"
+    private const val FLUTTER_EMERGENCY_UNLOCK_COUNT =
+        "flutter.premium.emergencyUnlock.count.v1"
+    private const val DEFAULT_EMERGENCY_UNLOCK_DAILY_LIMIT = 3
+    private const val EMERGENCY_UNLOCK_DURATION_MS = 60_000L
+
+    enum class EmergencyUnlockResult {
+        UNLOCKED,
+        NOT_PREMIUM,
+        LIMIT_REACHED
+    }
 
     private fun prefs(ctx: Context): SharedPreferences {
         return ctx.getSharedPreferences(FLUTTER_PREFS, Context.MODE_PRIVATE)
@@ -41,15 +64,29 @@ object PrefBridge {
         lockedPackages: Set<String>,
         lockEnabled: Boolean,
         indefUnlock: Boolean,
-        unlockUntilMs: Long
+        unlockUntilMs: Long,
+        premiumActive: Boolean,
+        emergencyUnlockDayKey: String,
+        emergencyUnlockCount: Int,
+        emergencyUnlockDailyLimit: Int
     ) {
         val sanitizedLockedPackages = sanitizeLockedPackages(ctx, lockedPackages)
+        val usage = normalizedEmergencyUsage(
+            ctx,
+            emergencyUnlockDayKey,
+            emergencyUnlockCount,
+            emergencyUnlockDailyLimit
+        )
         watcherPrefs(ctx).edit()
             .putBoolean(K_INITIALIZED, true)
             .putStringSet(K_LOCKED_PACKAGES, sanitizedLockedPackages)
             .putBoolean(K_LOCK_ENABLED, lockEnabled)
             .putBoolean(K_INDEF_UNLOCK, indefUnlock)
             .putLong(K_UNLOCK_UNTIL_MS, unlockUntilMs)
+            .putBoolean(K_PREMIUM_ACTIVE, premiumActive)
+            .putString(K_EMERGENCY_UNLOCK_DAY_KEY, usage.dayKey)
+            .putInt(K_EMERGENCY_UNLOCK_COUNT, usage.count)
+            .putInt(K_EMERGENCY_UNLOCK_DAILY_LIMIT, usage.limit)
             .apply()
     }
 
@@ -59,12 +96,29 @@ object PrefBridge {
             .apply()
     }
 
+    fun requestOpenPaywall(ctx: Context) {
+        watcherPrefs(ctx).edit()
+            .putBoolean(K_OPEN_PAYWALL_REQUESTED, true)
+            .apply()
+    }
+
     fun consumeOpenPuzzleRequest(ctx: Context): Boolean {
         val prefs = watcherPrefs(ctx)
         val requested = prefs.getBoolean(K_OPEN_PUZZLE_REQUESTED, false)
         if (requested) {
             prefs.edit()
                 .putBoolean(K_OPEN_PUZZLE_REQUESTED, false)
+                .apply()
+        }
+        return requested
+    }
+
+    fun consumeOpenPaywallRequest(ctx: Context): Boolean {
+        val prefs = watcherPrefs(ctx)
+        val requested = prefs.getBoolean(K_OPEN_PAYWALL_REQUESTED, false)
+        if (requested) {
+            prefs.edit()
+                .putBoolean(K_OPEN_PAYWALL_REQUESTED, false)
                 .apply()
         }
         return requested
@@ -158,5 +212,106 @@ object PrefBridge {
 
         val hasTimedUnlock = getUnlockUntilMs(ctx) > 0L
         return getLockEnabled(ctx) || hasTimedUnlock
+    }
+
+    fun isEmergencyUnlocked(ctx: Context, packageName: String): Boolean {
+        val prefs = watcherPrefs(ctx)
+        val unlockUntilMs = prefs.getLong(K_EMERGENCY_UNLOCK_UNTIL_MS, 0L)
+        val unlockedPackage = prefs.getString(K_EMERGENCY_UNLOCK_PACKAGE, null)
+        val now = System.currentTimeMillis()
+
+        if (unlockUntilMs <= now) {
+            if (unlockUntilMs > 0L || unlockedPackage != null) {
+                prefs.edit()
+                    .remove(K_EMERGENCY_UNLOCK_PACKAGE)
+                    .remove(K_EMERGENCY_UNLOCK_UNTIL_MS)
+                    .apply()
+            }
+            return false
+        }
+
+        return unlockedPackage == packageName
+    }
+
+    fun tryUseEmergencyUnlock(ctx: Context, packageName: String): EmergencyUnlockResult {
+        val prefs = watcherPrefs(ctx)
+        if (!prefs.getBoolean(K_PREMIUM_ACTIVE, false)) {
+            return EmergencyUnlockResult.NOT_PREMIUM
+        }
+
+        val usage = normalizedEmergencyUsage(ctx)
+        if (usage.count >= usage.limit) {
+            return EmergencyUnlockResult.LIMIT_REACHED
+        }
+
+        val nextCount = usage.count + 1
+        saveEmergencyUsage(ctx, usage.dayKey, nextCount)
+
+        prefs.edit()
+            .putString(K_EMERGENCY_UNLOCK_PACKAGE, packageName)
+            .putLong(
+                K_EMERGENCY_UNLOCK_UNTIL_MS,
+                System.currentTimeMillis() + EMERGENCY_UNLOCK_DURATION_MS
+            )
+            .apply()
+
+        return EmergencyUnlockResult.UNLOCKED
+    }
+
+    private data class EmergencyUsage(
+        val dayKey: String,
+        val count: Int,
+        val limit: Int
+    )
+
+    private fun normalizedEmergencyUsage(
+        ctx: Context,
+        dayKey: String? = null,
+        count: Int? = null,
+        limit: Int? = null
+    ): EmergencyUsage {
+        val prefs = watcherPrefs(ctx)
+        val today = todayKey()
+        val rawDayKey = dayKey?.takeIf { it.isNotBlank() }
+            ?: prefs.getString(K_EMERGENCY_UNLOCK_DAY_KEY, null)
+        val rawCount = count ?: prefs.getInt(K_EMERGENCY_UNLOCK_COUNT, 0)
+        val rawLimit = limit ?: prefs.getInt(
+            K_EMERGENCY_UNLOCK_DAILY_LIMIT,
+            DEFAULT_EMERGENCY_UNLOCK_DAILY_LIMIT
+        )
+        val normalizedLimit = rawLimit.coerceAtLeast(0)
+        val normalizedCount = if (rawDayKey == today) {
+            rawCount.coerceIn(0, normalizedLimit)
+        } else {
+            0
+        }
+        val normalized = EmergencyUsage(today, normalizedCount, normalizedLimit)
+
+        if (rawDayKey != today || rawCount != normalizedCount || rawLimit != normalizedLimit) {
+            prefs.edit()
+                .putString(K_EMERGENCY_UNLOCK_DAY_KEY, normalized.dayKey)
+                .putInt(K_EMERGENCY_UNLOCK_COUNT, normalized.count)
+                .putInt(K_EMERGENCY_UNLOCK_DAILY_LIMIT, normalized.limit)
+                .apply()
+            saveEmergencyUsage(ctx, normalized.dayKey, normalized.count)
+        }
+
+        return normalized
+    }
+
+    private fun saveEmergencyUsage(ctx: Context, dayKey: String, count: Int) {
+        watcherPrefs(ctx).edit()
+            .putString(K_EMERGENCY_UNLOCK_DAY_KEY, dayKey)
+            .putInt(K_EMERGENCY_UNLOCK_COUNT, count)
+            .apply()
+
+        prefs(ctx).edit()
+            .putString(FLUTTER_EMERGENCY_UNLOCK_DAY_KEY, dayKey)
+            .putInt(FLUTTER_EMERGENCY_UNLOCK_COUNT, count)
+            .apply()
+    }
+
+    private fun todayKey(): String {
+        return SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
     }
 }

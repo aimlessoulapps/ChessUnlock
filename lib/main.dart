@@ -233,7 +233,7 @@ ThemeData _buildAppTheme(Brightness brightness) {
         backgroundColor: scheme.primary,
         foregroundColor: scheme.onPrimary,
         disabledBackgroundColor: scheme.surfaceContainerHighest,
-        disabledForegroundColor: scheme.onSurfaceVariant.withOpacity(0.65),
+        disabledForegroundColor: scheme.onSurfaceVariant.withValues(alpha: 0.65),
         elevation: 0,
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
@@ -248,7 +248,7 @@ ThemeData _buildAppTheme(Brightness brightness) {
       ),
     ),
     navigationBarTheme: NavigationBarThemeData(
-      indicatorColor: scheme.primary.withOpacity(dark ? 0.18 : 0.12),
+      indicatorColor: scheme.primary.withValues(alpha: dark ? 0.18 : 0.12),
       iconTheme: WidgetStateProperty.resolveWith(
         (states) => IconThemeData(
           color: states.contains(WidgetState.selected)
@@ -259,18 +259,18 @@ ThemeData _buildAppTheme(Brightness brightness) {
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: scheme.surfaceContainerHighest.withOpacity(dark ? 0.45 : 0.7),
+      fillColor: scheme.surfaceContainerHighest.withValues(alpha: dark ? 0.45 : 0.7),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(18),
-        borderSide: BorderSide(color: scheme.outlineVariant.withOpacity(0.7)),
+        borderSide: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.7)),
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(18),
-        borderSide: BorderSide(color: scheme.outlineVariant.withOpacity(0.7)),
+        borderSide: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.7)),
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(18),
-        borderSide: BorderSide(color: scheme.primary.withOpacity(0.85)),
+        borderSide: BorderSide(color: scheme.primary.withValues(alpha: 0.85)),
       ),
     ),
     switchTheme: SwitchThemeData(
@@ -472,6 +472,15 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
   // Tabs
   late int _tab; // 0 Home, 1 Puzzle, 2 Settings
+  static const List<String> _bannerScreenNames = [
+    "home",
+    "puzzle",
+    "settings",
+  ];
+  static const int _bannerPrewarmBaseDelaySeconds = 2;
+  static const int _bannerPrewarmStepDelaySeconds = 3;
+  final List<bool> _bannerPrewarmEnabled = List<bool>.filled(3, false);
+  final List<Timer?> _bannerPrewarmTimers = List<Timer?>.filled(3, null);
 
   // Icons cache
   Map<String, Uint8List> _iconsByPkg = {};
@@ -528,9 +537,15 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
     await _loadQueuesFromPrefs(); // ✅ load stored queues
     if (!mounted) return;
+    debugPrint("[puzzle][first-load] started; reason=init");
     final puzzleLoad = _showNextPuzzleForCurrentDifficulty(
       reason: "init",
-    ).catchError((Object error, StackTrace stackTrace) {
+    ).then((_) {
+      debugPrint("[puzzle][first-load] completed; reason=init");
+    }).catchError((Object error, StackTrace stackTrace) {
+      debugPrint(
+        "[puzzle][first-load] completed with error; reason=init error=$error",
+      );
       if (mounted) _snack("Puzzle load failed.");
     });
     await _ensureAppLockReadyIfNeeded();
@@ -539,7 +554,68 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
     // ✅ Show a puzzle instantly if queue has one, otherwise cached, otherwise network.
     await puzzleLoad;
+    _scheduleDeferredBannerPrewarm();
     _scheduleDeferredLockedIconPrefetch();
+  }
+
+  void _scheduleDeferredBannerPrewarm() {
+    for (var i = 0; i < _bannerPrewarmTimers.length; i++) {
+      _bannerPrewarmTimers[i]?.cancel();
+      _bannerPrewarmTimers[i] = null;
+    }
+
+    var prewarmOrder = 0;
+    for (var i = 0; i < _bannerPrewarmEnabled.length; i++) {
+      if (i == _tab || _bannerPrewarmEnabled[i]) continue;
+
+      final delaySeconds = _bannerPrewarmBaseDelaySeconds +
+          (_bannerPrewarmStepDelaySeconds * prewarmOrder);
+      final delay = Duration(seconds: delaySeconds);
+      final screenName = _bannerScreenNames[i];
+      debugPrint(
+        "[ads][banner][prewarm] deferred inactive banner prewarm scheduled; "
+        "screen=$screenName delay=${delay.inSeconds}s",
+      );
+      _bannerPrewarmTimers[i] = Timer(delay, () => _enableBannerPrewarm(i));
+      prewarmOrder++;
+    }
+  }
+
+  void _enableBannerPrewarm(int tab) {
+    _bannerPrewarmTimers[tab] = null;
+    if (!mounted) return;
+    final lifecycleState = WidgetsBinding.instance.lifecycleState;
+    if (lifecycleState != null && lifecycleState != AppLifecycleState.resumed) {
+      debugPrint(
+        "[ads][banner][prewarm] inactive banner prewarm delayed; "
+        "screen=${_bannerScreenNames[tab]} lifecycleState=$lifecycleState",
+      );
+      _bannerPrewarmTimers[tab] = Timer(
+        const Duration(seconds: _bannerPrewarmStepDelaySeconds),
+        () => _enableBannerPrewarm(tab),
+      );
+      return;
+    }
+    if (_bannerPrewarmEnabled[tab]) {
+      debugPrint(
+        "[ads][banner][prewarm] inactive banner prewarm skipped; "
+        "screen=${_bannerScreenNames[tab]} already enabled",
+      );
+      return;
+    }
+
+    debugPrint(
+      "[ads][banner][prewarm] inactive banner prewarm started; "
+      "screen=${_bannerScreenNames[tab]} active=${_tab == tab}",
+    );
+    setState(() => _bannerPrewarmEnabled[tab] = true);
+  }
+
+  void _cancelBannerPrewarmTimers() {
+    for (var i = 0; i < _bannerPrewarmTimers.length; i++) {
+      _bannerPrewarmTimers[i]?.cancel();
+      _bannerPrewarmTimers[i] = null;
+    }
   }
 
   @override
@@ -549,6 +625,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     _autoCheckTimer?.cancel();
     _checkTimeout?.cancel();
     _hintBlinkTimer?.cancel();
+    _cancelBannerPrewarmTimers();
     _disposeRewardedAd();
     _cancelRewardedRetryTimer();
     _boardController.removeListener(_onBoardChanged);
@@ -2634,10 +2711,10 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
               const SizedBox(height: 10),
               Container(
                 decoration: BoxDecoration(
-                  color: cs.surfaceContainerHighest.withOpacity(0.55),
+                  color: cs.surfaceContainerHighest.withValues(alpha: 0.55),
                   borderRadius: BorderRadius.circular(18),
                   border:
-                      Border.all(color: cs.outlineVariant.withOpacity(0.45)),
+                      Border.all(color: cs.outlineVariant.withValues(alpha: 0.45)),
                 ),
                 height: 180,
                 child: _UnlockDurationWheelPicker(
@@ -3046,6 +3123,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
           children: [
             HomeTab(
               active: _tab == 0,
+              prewarmBanner: _bannerPrewarmEnabled[0],
               lockEnabled: _lockEnabled,
               indefiniteUnlock: _indefiniteUnlock,
               unlockRemaining: _unlockRemaining,
@@ -3079,6 +3157,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
             ),
             PuzzleTab(
               active: _tab == 1,
+              prewarmBanner: _bannerPrewarmEnabled[1],
               puzzle: _puzzle,
               loading: _loadingPuzzle,
               loadError: _loadError,
@@ -3101,6 +3180,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
             ),
             SettingsTab(
               active: _tab == 2,
+              prewarmBanner: _bannerPrewarmEnabled[2],
               lockEnabled: _lockEnabled,
               indefiniteUnlock: _indefiniteUnlock,
               unlockRemaining: _unlockRemaining,

@@ -60,6 +60,10 @@ class MainActivity : FlutterActivity() {
                     result.success(PrefBridge.consumeOpenPuzzleRequest(applicationContext))
                 }
 
+                "consumeOpenPaywallRequest" -> {
+                    result.success(PrefBridge.consumeOpenPaywallRequest(applicationContext))
+                }
+
                 "syncWatcherState" -> {
                     syncWatcherState(call.arguments)
                     result.success(null)
@@ -146,13 +150,21 @@ class MainActivity : FlutterActivity() {
         val lockEnabled = args["lockEnabled"] as? Boolean ?: true
         val indefUnlock = args["indefiniteUnlock"] as? Boolean ?: false
         val unlockUntilMs = (args["unlockUntilMs"] as? Number)?.toLong() ?: 0L
+        val premiumActive = args["premiumActive"] as? Boolean ?: false
+        val emergencyUnlockDayKey = args["emergencyUnlockDayKey"] as? String ?: ""
+        val emergencyUnlockCount = (args["emergencyUnlockCount"] as? Number)?.toInt() ?: 0
+        val emergencyUnlockDailyLimit = (args["emergencyUnlockDailyLimit"] as? Number)?.toInt() ?: 0
 
         PrefBridge.saveWatcherState(
             applicationContext,
             packages,
             lockEnabled,
             indefUnlock,
-            unlockUntilMs
+            unlockUntilMs,
+            premiumActive,
+            emergencyUnlockDayKey,
+            emergencyUnlockCount,
+            emergencyUnlockDailyLimit
         )
     }
 
