@@ -152,6 +152,13 @@ class ForegroundAppWatcherService : Service() {
         }
     }
 
+    private val emergencyButtonTick = object : Runnable {
+        override fun run() {
+            if (!running || !overlayShown) return
+            updateEmergencyButtonState()
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -270,16 +277,19 @@ class ForegroundAppWatcherService : Service() {
         val root = FrameLayout(this)
         root.setBackgroundColor(0xE6000000.toInt())
 
-        val card = LinearLayout(this)
-        card.orientation = LinearLayout.VERTICAL
-        card.gravity = Gravity.CENTER_HORIZONTAL
-        card.setPadding(dp(28), dp(30), dp(28), dp(26))
+        val card = FrameLayout(this)
+        card.setPadding(dp(24), dp(24), dp(24), dp(24))
 
         val bg = GradientDrawable()
         bg.cornerRadius = dp(28).toFloat()
         bg.setColor(0xFF151A17.toInt())
         bg.setStroke(dp(1), 0x24FFFFFF)
         card.background = bg
+
+        val cardContent = LinearLayout(this)
+        cardContent.orientation = LinearLayout.VERTICAL
+        cardContent.gravity = Gravity.CENTER_HORIZONTAL
+        cardContent.setPadding(0, dp(44), 0, dp(2))
 
         val iconFrame = FrameLayout(this)
         val iconBg = GradientDrawable()
@@ -335,34 +345,41 @@ class ForegroundAppWatcherService : Service() {
         }
 
         val emergencyBtn = Button(this)
-        emergencyBtn.text = "Emergency 1 min"
         emergencyBtn.isAllCaps = false
-        emergencyBtn.textSize = 15f
+        emergencyBtn.textSize = 12f
         emergencyBtn.typeface = Typeface.DEFAULT_BOLD
         emergencyBtn.setTextColor(0xFF43D66E.toInt())
+        emergencyBtn.minHeight = 0
+        emergencyBtn.minWidth = 0
+        emergencyBtn.setIncludeFontPadding(false)
+        emergencyBtn.setPadding(dp(10), dp(4), dp(10), dp(4))
         val emergencyBtnBg = GradientDrawable()
-        emergencyBtnBg.cornerRadius = dp(18).toFloat()
+        emergencyBtnBg.cornerRadius = dp(16).toFloat()
         emergencyBtnBg.setColor(0x00151A17)
         emergencyBtnBg.setStroke(dp(1), 0x6643D66E)
         emergencyBtn.background = emergencyBtnBg
-        emergencyBtn.setOnClickListener {
-            handleEmergencyUnlockTap(blockedPkg)
-        }
 
         val iconFrameLp = LinearLayout.LayoutParams(dp(76), dp(76))
-        card.addView(iconFrame, iconFrameLp)
-        card.addView(title)
-        card.addView(subtitle)
+        cardContent.addView(iconFrame, iconFrameLp)
+        cardContent.addView(title)
+        cardContent.addView(subtitle)
         val btnLp = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             dp(54)
         )
-        card.addView(btn, btnLp)
-        val emergencyBtnLp = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            dp(50)
+        cardContent.addView(btn, btnLp)
+
+        val contentLp = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
         )
-        emergencyBtnLp.topMargin = dp(10)
+        card.addView(cardContent, contentLp)
+
+        val emergencyBtnLp = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            dp(42)
+        )
+        emergencyBtnLp.gravity = Gravity.TOP or Gravity.END
         card.addView(emergencyBtn, emergencyBtnLp)
 
         val lpCard = FrameLayout.LayoutParams(
@@ -399,7 +416,11 @@ class ForegroundAppWatcherService : Service() {
         overlaySubtitle = subtitle
         overlayEmergencyButton = emergencyBtn
         overlayBlockedPkg = blockedPkg
+        overlayEmergencyButton?.setOnClickListener {
+            handleEmergencyUnlockTap(blockedPkg)
+        }
         overlayShown = true
+        updateEmergencyButtonState()
         CrashlyticsLogger.overlayShown()
         AnalyticsLogger.overlayShown(this)
     }
@@ -411,10 +432,40 @@ class ForegroundAppWatcherService : Service() {
             handleEmergencyUnlockTap(blockedPkg)
         }
         overlayBlockedPkg = blockedPkg
+        updateEmergencyButtonState()
     }
 
     private fun overlaySubtitleText(): String {
         return "Solve a chess puzzle in ChessUnlock to use this app."
+    }
+
+    private fun emergencyUnlockButtonText(): String {
+        val activeMs = PrefBridge.getEmergencyUnlockActiveRemainingMs(this)
+        if (activeMs > 0L) {
+            return "Emergency\n${formatCountdown(activeMs)}"
+        }
+        return "Emergency\n1 min - ${PrefBridge.getEmergencyUnlockRemaining(this)} left"
+    }
+
+    private fun updateEmergencyButtonState() {
+        val activeMs = PrefBridge.getEmergencyUnlockActiveRemainingMs(this)
+        val remaining = PrefBridge.getEmergencyUnlockRemaining(this)
+        val enabled = activeMs <= 0L && remaining > 0
+        overlayEmergencyButton?.text = emergencyUnlockButtonText()
+        overlayEmergencyButton?.isEnabled = enabled
+        overlayEmergencyButton?.alpha = if (enabled || activeMs > 0L) 1.0f else 0.55f
+
+        handler.removeCallbacks(emergencyButtonTick)
+        if (overlayShown && activeMs > 0L) {
+            handler.postDelayed(emergencyButtonTick, 1000L)
+        }
+    }
+
+    private fun formatCountdown(ms: Long): String {
+        val totalSeconds = ((ms + 999L) / 1000L).coerceAtLeast(1L)
+        val minutes = totalSeconds / 60L
+        val seconds = totalSeconds % 60L
+        return "$minutes:${seconds.toString().padStart(2, '0')}"
     }
 
     private fun dp(value: Int): Int {
@@ -422,11 +473,15 @@ class ForegroundAppWatcherService : Service() {
     }
 
     private fun hideOverlay() {
-        if (!overlayShown) return
+        if (!overlayShown) {
+            handler.removeCallbacks(emergencyButtonTick)
+            return
+        }
         try {
             overlayRoot?.let { wm.removeView(it) }
         } catch (_: Throwable) {
         } finally {
+            handler.removeCallbacks(emergencyButtonTick)
             overlayRoot = null
             overlaySubtitle = null
             overlayEmergencyButton = null
@@ -443,6 +498,10 @@ class ForegroundAppWatcherService : Service() {
                 hideOverlay()
                 handler.postDelayed(tick, 300)
             }
+            PrefBridge.EmergencyUnlockResult.ACTIVE -> {
+                updateEmergencyButtonState()
+                Toast.makeText(this, "Emergency unlock is already active.", Toast.LENGTH_SHORT).show()
+            }
             PrefBridge.EmergencyUnlockResult.NOT_PREMIUM -> {
                 Toast.makeText(this, "ChessUnlock Premium required.", Toast.LENGTH_SHORT).show()
                 clearPendingBlockedPackage()
@@ -456,6 +515,7 @@ class ForegroundAppWatcherService : Service() {
                 handler.postDelayed(tick, 300)
             }
             PrefBridge.EmergencyUnlockResult.LIMIT_REACHED -> {
+                updateEmergencyButtonState()
                 Toast.makeText(this, "Emergency unlock limit reached for today.", Toast.LENGTH_SHORT).show()
             }
         }

@@ -9,7 +9,6 @@ void main() {
       const MaterialApp(
         home: PaywallScreen(
           isPremium: false,
-          developerPremiumOverride: false,
         ),
       ),
     );
@@ -19,6 +18,7 @@ void main() {
     expect(find.text("Unlock apps for up to 30 minutes"), findsOneWidget);
     expect(find.text("Emergency 1-minute unlock"), findsOneWidget);
     expect(find.text("No ads"), findsOneWidget);
+    expect(find.text("Choose puzzle difficulty"), findsOneWidget);
     expect(
       find.text("Hint and skip without ads, with a short 30-second wait"),
       findsOneWidget,

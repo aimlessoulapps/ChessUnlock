@@ -16,7 +16,9 @@ import 'firebase_options.dart';
 import 'services/app_lock/app_lock_service.dart';
 import 'services/analytics_service.dart';
 import 'services/crashlytics_service.dart';
+import 'services/emergency_unlock_service.dart';
 import 'services/lock_state_controller.dart';
+import 'services/premium_access_service.dart';
 import 'services/puzzle_queue_service.dart';
 import 'services/stats_repository.dart';
 import 'ui.dart';
@@ -233,7 +235,8 @@ ThemeData _buildAppTheme(Brightness brightness) {
         backgroundColor: scheme.primary,
         foregroundColor: scheme.onPrimary,
         disabledBackgroundColor: scheme.surfaceContainerHighest,
-        disabledForegroundColor: scheme.onSurfaceVariant.withValues(alpha: 0.65),
+        disabledForegroundColor:
+            scheme.onSurfaceVariant.withValues(alpha: 0.65),
         elevation: 0,
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
@@ -259,14 +262,17 @@ ThemeData _buildAppTheme(Brightness brightness) {
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: scheme.surfaceContainerHighest.withValues(alpha: dark ? 0.45 : 0.7),
+      fillColor:
+          scheme.surfaceContainerHighest.withValues(alpha: dark ? 0.45 : 0.7),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(18),
-        borderSide: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.7)),
+        borderSide:
+            BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.7)),
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(18),
-        borderSide: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.7)),
+        borderSide:
+            BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.7)),
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(18),
@@ -342,6 +348,8 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   late final LockStateController _lockState;
   late final StatsRepository _statsRepository;
   late final PuzzleQueueService _puzzleQueue;
+  late final PremiumAccessService _premiumAccess;
+  late final EmergencyUnlockService _emergencyUnlock;
   late final AppLockService _appLock;
   bool _unsupportedAppLockMessageShown = false;
   NativeAppSelectionResult? _appLockSelectionSummary;
@@ -414,7 +422,8 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     "harder",
     "hardest",
   ];
-  String _difficulty = "normal";
+  static const String _defaultDifficulty = "normal";
+  String _difficulty = _defaultDifficulty;
 
   // Shared prefs keys
   static const _kDifficulty = "puzzleDifficulty";
@@ -464,6 +473,14 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   bool _rewardedDialogShowing = false;
   bool _loggedInvalidRewardedAdUnitId = false;
   bool _loggedRewardedConfiguration = false;
+  Timer? _premiumHintWaitTimer;
+  Timer? _premiumSkipWaitTimer;
+  DateTime? _premiumHintReadyAt;
+  DateTime? _premiumSkipReadyAt;
+  bool _premiumHintReady = false;
+  bool _premiumSkipReady = false;
+  DateTime? _homeEmergencyUnlockActiveUntil;
+  bool _homeEmergencyUnlockBusy = false;
 
   // Blink hint overlay
   String? _hintFromSquare;
@@ -510,7 +527,11 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       _prefsFuture,
       difficultyOptions: _difficultyOptions,
     );
+    _premiumAccess = PremiumAccessService(_prefsFuture);
+    _emergencyUnlock = EmergencyUnlockService(_prefsFuture);
     _appLock = createAppLockService();
+    _premiumAccess.addListener(_onPremiumStateChanged);
+    _emergencyUnlock.addListener(_onEmergencyUnlockStateChanged);
     WidgetsBinding.instance.addObserver(this);
 
     _boardController.addListener(_onBoardChanged);
@@ -518,7 +539,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     _init();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      _preloadRewardedAd();
+      if (!_isPremium) _preloadRewardedAd();
       _scheduleLaunchableAppsPrefetch(reason: "startup");
     });
 
@@ -533,6 +554,8 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
   Future<void> _init() async {
     await _loadPrefs();
+    if (!mounted) return;
+    await _refreshPremiumAndEmergencyState();
     if (!mounted) return;
 
     await _loadQueuesFromPrefs(); // ✅ load stored queues
@@ -625,9 +648,14 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     _autoCheckTimer?.cancel();
     _checkTimeout?.cancel();
     _hintBlinkTimer?.cancel();
+    _resetPremiumPuzzleActionState(notify: false);
     _cancelBannerPrewarmTimers();
     _disposeRewardedAd();
     _cancelRewardedRetryTimer();
+    _premiumAccess.removeListener(_onPremiumStateChanged);
+    _emergencyUnlock.removeListener(_onEmergencyUnlockStateChanged);
+    _premiumAccess.dispose();
+    _emergencyUnlock.dispose();
     _boardController.removeListener(_onBoardChanged);
     _boardController.dispose();
     super.dispose();
@@ -639,7 +667,11 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
         _queueExpirySync();
       }
-      unawaited(_ensureAppLockReadyIfNeeded());
+      unawaited(
+        _refreshPremiumAndEmergencyState().then(
+          (_) => _ensureAppLockReadyIfNeeded(),
+        ),
+      );
       unawaited(_openPuzzleFromOverlayRequestIfNeeded());
       _scheduleLaunchableAppsPrefetch(reason: "app_resumed");
     }
@@ -655,10 +687,52 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     );
   }
 
+  bool get _isPremium => _premiumAccess.isPremium;
+  String get _effectiveDifficulty =>
+      _isPremium ? _difficulty : _defaultDifficulty;
+
+  bool _clampDifficultyForFreeUsers() {
+    if (_isPremium || _difficulty == _defaultDifficulty) return false;
+    _difficulty = _defaultDifficulty;
+    unawaited(_saveDifficulty());
+    return true;
+  }
+
+  Future<void> _refreshPremiumAndEmergencyState() async {
+    await _premiumAccess.refreshPremiumStatus();
+    _clampDifficultyForFreeUsers();
+    await _emergencyUnlock.refreshUsage();
+    if (mounted) setState(() {});
+  }
+
+  void _onPremiumStateChanged() {
+    if (!mounted) return;
+    _resetPremiumPuzzleActionState(notify: false);
+    _clampDifficultyForFreeUsers();
+    if (_isPremium) {
+      _disposeRewardedAd();
+    } else {
+      _preloadRewardedAd();
+    }
+    setState(() {});
+    unawaited(_ensureAppLockReadyIfNeeded());
+  }
+
+  void _onEmergencyUnlockStateChanged() {
+    if (!mounted) return;
+    setState(() {});
+    unawaited(_ensureAppLockReadyIfNeeded());
+  }
+
   Future<void> _openPuzzleFromOverlayRequestIfNeeded() async {
     final openPuzzle = await _appLock.consumeOpenPuzzleRequest();
-    if (!mounted || !openPuzzle) return;
-    _goPuzzle();
+    final openPaywall = await _appLock.consumeOpenPaywallRequest();
+    if (!mounted) return;
+    if (openPaywall) {
+      _openPremiumPaywall();
+      return;
+    }
+    if (openPuzzle) _goPuzzle();
   }
 
   Future<void> _maybeShowFirstLaunchOnboarding() async {
@@ -778,7 +852,24 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       return;
     }
 
-    await _appLock.requestInitialPermissionSetup();
+    final permissionStatus = await _appLock.checkPermissions(
+      requiresOverlay: false,
+    );
+
+    switch (permissionStatus.issue) {
+      case AppLockPermissionIssue.usageAccessRequired:
+        await _appLock.openUsageAccessSettings();
+        break;
+      case AppLockPermissionIssue.screenTimeAuthorizationRequired:
+        await _appLock.requestInitialPermissionSetup();
+        break;
+      case AppLockPermissionIssue.unsupported:
+        _snack(_appLock.unsupportedMessage);
+        break;
+      case AppLockPermissionIssue.overlayPermissionRequired:
+      case AppLockPermissionIssue.none:
+        break;
+    }
   }
 
   bool get _isUnlocked => _lockState.isUnlocked;
@@ -792,6 +883,26 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
         (_tab == 0 || _tab == 2) && !_lockEnabled && !_indefiniteUnlock;
     if (unlockCountdownVisible) {
       parts.add("unlock:${_unlockRemaining.inSeconds}");
+    }
+
+    final premiumPuzzleActionCountdownVisible =
+        _tab == 1 && _isPremium && _puzzle != null && !_solved;
+    if (premiumPuzzleActionCountdownVisible) {
+      if (_premiumPuzzleActionWaiting(_RewardedPuzzleAction.hint)) {
+        parts.add(
+          "premium_hint:${_premiumPuzzleActionRemaining(_RewardedPuzzleAction.hint).inSeconds}",
+        );
+      }
+      if (_premiumPuzzleActionWaiting(_RewardedPuzzleAction.skip)) {
+        parts.add(
+          "premium_skip:${_premiumPuzzleActionRemaining(_RewardedPuzzleAction.skip).inSeconds}",
+        );
+      }
+    }
+
+    final emergencyRemaining = _homeEmergencyUnlockActiveRemaining;
+    if (emergencyRemaining > Duration.zero) {
+      parts.add("emergency:${emergencyRemaining.inSeconds}");
     }
 
     return parts.join("|");
@@ -1169,7 +1280,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   Future<void> _showNextPuzzleForCurrentDifficulty(
       {required String reason}) async {
     if (!mounted) return;
-    final diff = _difficulty;
+    final diff = _effectiveDifficulty;
     final isExtraPuzzle = _extraPuzzleMode || reason == "extra";
     final hadPuzzleAlready = _puzzle != null;
 
@@ -1235,6 +1346,10 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
         lockEnabled: _lockEnabled,
         indefiniteUnlock: _indefiniteUnlock,
         unlockUntilMs: _unlockedUntil?.millisecondsSinceEpoch ?? 0,
+        premiumActive: _isPremium,
+        emergencyUnlockDayKey: _emergencyUnlock.dayKey,
+        emergencyUnlockCount: _emergencyUnlock.usedToday,
+        emergencyUnlockDailyLimit: EmergencyUnlockService.dailyLimit,
       ),
     );
   }
@@ -1403,6 +1518,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     _puzzleSolvedChoiceShown = false;
     _puzzleSolvedDialogShowing = false;
     _loadError = null;
+    _resetPremiumPuzzleActionState(notify: false);
 
     _positionFen = startingFen;
     _setBoardFen(_positionFen);
@@ -1568,6 +1684,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     _setBoardFen(_positionFen);
 
     _userPlaysBlack = _isBlackToMoveFromFen(puzzle.fen);
+    _resetPremiumPuzzleActionState(notify: false);
 
     if (isNewPuzzle) {
       _attemptsThisPuzzle = 0;
@@ -1576,7 +1693,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       _needsFreshPuzzleOnNextOpen = false;
     }
 
-    _preloadRewardedAd();
+    if (!_isPremium) _preloadRewardedAd();
 
     setState(() {});
   }
@@ -1753,22 +1870,23 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     final wasSolved = _solved;
     _solved = true;
     _unlockAvailable = true;
+    _resetPremiumPuzzleActionState(notify: false);
     if (!wasSolved) {
       if (_extraPuzzleMode) {
         AppCrashlytics.logPuzzleSolved(
           puzzleType: "practice_puzzle",
-          difficulty: _difficulty,
+          difficulty: _effectiveDifficulty,
         );
         AppAnalytics.practicePuzzleSolved(
-          difficulty: _difficulty,
+          difficulty: _effectiveDifficulty,
         );
       } else {
         AppCrashlytics.logPuzzleSolved(
           puzzleType: "locked_app_puzzle",
-          difficulty: _difficulty,
+          difficulty: _effectiveDifficulty,
         );
         AppAnalytics.lockedAppPuzzleSolved(
-          difficulty: _difficulty,
+          difficulty: _effectiveDifficulty,
         );
       }
     }
@@ -1930,6 +2048,35 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       (defaultTargetPlatform == TargetPlatform.android ||
           defaultTargetPlatform == TargetPlatform.iOS);
 
+  Duration _premiumPuzzleActionRemaining(_RewardedPuzzleAction action) {
+    if (!_isPremium || !_premiumPuzzleActionWaiting(action)) {
+      return Duration.zero;
+    }
+    final readyAt = switch (action) {
+      _RewardedPuzzleAction.hint => _premiumHintReadyAt,
+      _RewardedPuzzleAction.skip => _premiumSkipReadyAt,
+    };
+    if (readyAt == null) return Duration.zero;
+    final remaining = readyAt.difference(DateTime.now());
+    return remaining.isNegative ? Duration.zero : remaining;
+  }
+
+  bool _premiumPuzzleActionWaiting(_RewardedPuzzleAction action) {
+    return switch (action) {
+      _RewardedPuzzleAction.hint =>
+        !_premiumHintReady && (_premiumHintWaitTimer?.isActive ?? false),
+      _RewardedPuzzleAction.skip =>
+        !_premiumSkipReady && (_premiumSkipWaitTimer?.isActive ?? false),
+    };
+  }
+
+  bool _premiumPuzzleActionReady(_RewardedPuzzleAction action) {
+    return switch (action) {
+      _RewardedPuzzleAction.hint => _premiumHintReady,
+      _RewardedPuzzleAction.skip => _premiumSkipReady,
+    };
+  }
+
   bool get _rewardedPuzzleActionAvailable =>
       _puzzle != null &&
       !_solved &&
@@ -1943,9 +2090,148 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
   bool get _skipAvailable => _rewardedPuzzleActionAvailable;
 
+  String _premiumPuzzleActionLabel(_RewardedPuzzleAction action) {
+    return switch (action) {
+      _RewardedPuzzleAction.hint => "Hint",
+      _RewardedPuzzleAction.skip => "Skip",
+    };
+  }
+
+  String _puzzleActionStatusLabel(_RewardedPuzzleAction action) {
+    if (!_isPremium) {
+      return _rewardedPuzzleActionAvailable ? "Tap to use" : "Please wait";
+    }
+    if (!_rewardedPuzzleActionAvailable) return "Please wait";
+    if (_premiumPuzzleActionReady(action)) return "Ready";
+    if (_premiumPuzzleActionWaiting(action)) {
+      final seconds = max(1, _premiumPuzzleActionRemaining(action).inSeconds);
+      return "Wait ${seconds}s";
+    }
+    return "Start wait";
+  }
+
+  bool _usePremiumPuzzleActionIfReady(_RewardedPuzzleAction action) {
+    if (_premiumPuzzleActionReady(action)) return true;
+
+    final label = _premiumPuzzleActionLabel(action);
+    if (_premiumPuzzleActionWaiting(action)) {
+      final seconds = max(1, _premiumPuzzleActionRemaining(action).inSeconds);
+      _snack("$label ready in $seconds seconds.");
+      return false;
+    }
+
+    _startPremiumPuzzleActionWait(action);
+    return false;
+  }
+
+  void _startPremiumPuzzleActionWait(_RewardedPuzzleAction action) {
+    if (_premiumPuzzleActionWaiting(action) ||
+        _premiumPuzzleActionReady(action)) {
+      return;
+    }
+
+    final readyAt = DateTime.now().add(
+      PremiumAccessService.premiumPuzzleActionDelay,
+    );
+
+    void markReady() {
+      if (!mounted) return;
+      if (_puzzle == null || _solved || _loadingPuzzle) {
+        _resetPremiumPuzzleAction(action);
+        return;
+      }
+
+      final label = _premiumPuzzleActionLabel(action);
+      setState(() {
+        switch (action) {
+          case _RewardedPuzzleAction.hint:
+            _premiumHintWaitTimer = null;
+            _premiumHintReadyAt = null;
+            _premiumHintReady = true;
+          case _RewardedPuzzleAction.skip:
+            _premiumSkipWaitTimer = null;
+            _premiumSkipReadyAt = null;
+            _premiumSkipReady = true;
+        }
+      });
+      _snack("$label ready. Tap $label again.");
+    }
+
+    setState(() {
+      switch (action) {
+        case _RewardedPuzzleAction.hint:
+          _premiumHintReadyAt = readyAt;
+          _premiumHintReady = false;
+          _premiumHintWaitTimer?.cancel();
+          _premiumHintWaitTimer = Timer(
+            PremiumAccessService.premiumPuzzleActionDelay,
+            markReady,
+          );
+        case _RewardedPuzzleAction.skip:
+          _premiumSkipReadyAt = readyAt;
+          _premiumSkipReady = false;
+          _premiumSkipWaitTimer?.cancel();
+          _premiumSkipWaitTimer = Timer(
+            PremiumAccessService.premiumPuzzleActionDelay,
+            markReady,
+          );
+      }
+    });
+
+    _snack(
+      "${_premiumPuzzleActionLabel(action)} ready in "
+      "${PremiumAccessService.premiumPuzzleActionDelay.inSeconds} seconds.",
+    );
+  }
+
+  bool _clearPremiumPuzzleAction(_RewardedPuzzleAction action) {
+    switch (action) {
+      case _RewardedPuzzleAction.hint:
+        final changed = _premiumHintWaitTimer != null ||
+            _premiumHintReadyAt != null ||
+            _premiumHintReady;
+        _premiumHintWaitTimer?.cancel();
+        _premiumHintWaitTimer = null;
+        _premiumHintReadyAt = null;
+        _premiumHintReady = false;
+        return changed;
+      case _RewardedPuzzleAction.skip:
+        final changed = _premiumSkipWaitTimer != null ||
+            _premiumSkipReadyAt != null ||
+            _premiumSkipReady;
+        _premiumSkipWaitTimer?.cancel();
+        _premiumSkipWaitTimer = null;
+        _premiumSkipReadyAt = null;
+        _premiumSkipReady = false;
+        return changed;
+    }
+  }
+
+  void _resetPremiumPuzzleAction(
+    _RewardedPuzzleAction action, {
+    bool notify = true,
+  }) {
+    final changed = _clearPremiumPuzzleAction(action);
+    if (changed && notify && mounted) setState(() {});
+  }
+
+  void _resetPremiumPuzzleActionState({bool notify = true}) {
+    final hintChanged = _clearPremiumPuzzleAction(_RewardedPuzzleAction.hint);
+    final skipChanged = _clearPremiumPuzzleAction(_RewardedPuzzleAction.skip);
+    if ((hintChanged || skipChanged) && notify && mounted) setState(() {});
+  }
+
   Future<void> _onHintPressed() async {
     if (!_hintAvailable) return;
     AppAnalytics.hintButtonTapped();
+    if (_isPremium) {
+      if (!_usePremiumPuzzleActionIfReady(_RewardedPuzzleAction.hint)) {
+        return;
+      }
+      _grantHintReward();
+      _resetPremiumPuzzleAction(_RewardedPuzzleAction.hint);
+      return;
+    }
     await _showRewardedActionDialog(
       action: _RewardedPuzzleAction.hint,
       title: "Get a hint",
@@ -1959,6 +2245,14 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   Future<void> _onSkipPressed() async {
     if (!_skipAvailable) return;
     AppAnalytics.skipButtonTapped();
+    if (_isPremium) {
+      if (!_usePremiumPuzzleActionIfReady(_RewardedPuzzleAction.skip)) {
+        return;
+      }
+      _grantSkipReward();
+      _resetPremiumPuzzleActionState();
+      return;
+    }
     await _showRewardedActionDialog(
       action: _RewardedPuzzleAction.skip,
       title: "Skip puzzle",
@@ -2171,6 +2465,10 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     required String reason,
     bool ignoreRetryDelay = false,
   }) {
+    if (_isPremium) {
+      _debugRewarded("rewarded load skipped; premium mode active");
+      return Future.value(null);
+    }
     if (!_rewardedPlatformSupported) {
       _debugRewarded("rewarded load skipped; unsupported platform");
       _lastRewardedAdLoadError = null;
@@ -2278,6 +2576,10 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   }
 
   void _preloadRewardedAd() {
+    if (_isPremium) {
+      _disposeRewardedAd();
+      return;
+    }
     if (!_rewardedPlatformSupported) return;
     _debugRewardedConfigurationIfNeeded();
     if (!_hasUsableRewardedAdUnitId) {
@@ -2625,6 +2927,57 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     await _showBreakTimePicker();
   }
 
+  Duration get _homeEmergencyUnlockActiveRemaining {
+    final activeUntil = _homeEmergencyUnlockActiveUntil;
+    if (activeUntil == null) return Duration.zero;
+    final remaining = activeUntil.difference(DateTime.now());
+    if (remaining.isNegative) {
+      _homeEmergencyUnlockActiveUntil = null;
+      return Duration.zero;
+    }
+    return remaining;
+  }
+
+  Future<void> _onEmergencyUnlockFromHome() async {
+    if (_homeEmergencyUnlockBusy) return;
+
+    if (_homeEmergencyUnlockActiveRemaining > Duration.zero) {
+      _snack("Emergency unlock is already active.");
+      return;
+    }
+
+    if (!_isPremium) {
+      _openPremiumPaywall();
+      return;
+    }
+
+    setState(() => _homeEmergencyUnlockBusy = true);
+    try {
+      final recorded = await _emergencyUnlock.recordUseIfAvailable();
+      if (!mounted) return;
+      if (!recorded) {
+        _snack("Emergency unlock limit reached for today.");
+        return;
+      }
+
+      final saved =
+          await _unlockForMinutes(EmergencyUnlockService.unlockMinutes);
+      if (!mounted) return;
+      if (saved) {
+        _homeEmergencyUnlockActiveUntil = DateTime.now().add(
+          const Duration(minutes: EmergencyUnlockService.unlockMinutes),
+        );
+        _snack("Emergency unlock started for 1 minute.");
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _homeEmergencyUnlockBusy = false);
+      } else {
+        _homeEmergencyUnlockBusy = false;
+      }
+    }
+  }
+
   void _openPracticePuzzleFromHome() {
     AppAnalytics.solveMorePuzzlesTapped();
     _extraPuzzleMode = true;
@@ -2663,80 +3016,115 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     }
 
     const minUnlockMinutes = 1;
-    const maxUnlockMinutes = 15;
+    const maxUnlockMinutes = PremiumAccessService.premiumUnlockMinutes;
+    const freeUnlockMinutes = PremiumAccessService.freeUnlockMinutes;
     var selected = 10.clamp(minUnlockMinutes, maxUnlockMinutes).toInt();
+    var lastValidFreeSelection = min(selected, freeUnlockMinutes);
+    final wheelController = FixedExtentScrollController(
+      initialItem: selected - minUnlockMinutes,
+    );
 
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      backgroundColor: Theme.of(context).colorScheme.surface,
-      builder: (ctx) {
-        final cs = Theme.of(ctx).colorScheme;
+    try {
+      await showModalBottomSheet<void>(
+        context: context,
+        showDragHandle: true,
+        isScrollControlled: true,
+        backgroundColor: Theme.of(context).colorScheme.surface,
+        builder: (ctx) {
+          final cs = Theme.of(ctx).colorScheme;
 
-        return _bottomSheetBody(
-          ctx,
-          Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              OverflowBar(
-                alignment: MainAxisAlignment.spaceBetween,
-                overflowAlignment: OverflowBarAlignment.end,
-                spacing: 8,
-                overflowSpacing: 8,
+          return StatefulBuilder(
+            builder: (ctx, setSheetState) => _bottomSheetBody(
+              ctx,
+              Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
+                  OverflowBar(
+                    alignment: MainAxisAlignment.spaceBetween,
+                    overflowAlignment: OverflowBarAlignment.end,
+                    spacing: 8,
+                    overflowSpacing: 8,
+                    children: [
+                      Text(
+                        "Choose unlock time",
+                        style: Theme.of(ctx).textTheme.titleMedium,
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        child: const Text("Cancel"),
+                      ),
+                      FilledButton(
+                        onPressed: () async {
+                          if (!_isPremium && selected > freeUnlockMinutes) {
+                            final clamped = lastValidFreeSelection
+                                .clamp(minUnlockMinutes, freeUnlockMinutes)
+                                .toInt();
+                            setSheetState(() => selected = clamped);
+                            await wheelController.animateToItem(
+                              clamped - minUnlockMinutes,
+                              duration: const Duration(milliseconds: 220),
+                              curve: Curves.easeOutCubic,
+                            );
+                            _openPremiumPaywall();
+                            return;
+                          }
+
+                          AppAnalytics.unlockDurationSelected(selected);
+                          Navigator.pop(ctx);
+                          final saved = await _unlockForMinutes(selected);
+                          if (!mounted) return;
+                          if (saved) {
+                            AppAnalytics.unlockStarted(selected);
+                            _snack("Apps unlocked for $selected minutes.");
+                          }
+                        },
+                        child: const Text("Start"),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Container(
+                    decoration: BoxDecoration(
+                      color: cs.surfaceContainerHighest.withValues(alpha: 0.55),
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(
+                        color: cs.outlineVariant.withValues(alpha: 0.45),
+                      ),
+                    ),
+                    height: 180,
+                    child: _UnlockDurationWheelPicker(
+                      minMinutes: minUnlockMinutes,
+                      maxMinutes: maxUnlockMinutes,
+                      freeLimitMinutes: freeUnlockMinutes,
+                      isPremium: _isPremium,
+                      scrollController: wheelController,
+                      onChanged: (minutes) {
+                        selected = minutes;
+                        if (minutes <= freeUnlockMinutes) {
+                          lastValidFreeSelection = minutes;
+                        }
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 10),
                   Text(
-                    "Choose unlock time",
-                    style: Theme.of(ctx).textTheme.titleMedium,
-                  ),
-                  TextButton(
-                    onPressed: () => Navigator.pop(ctx),
-                    child: const Text("Cancel"),
-                  ),
-                  FilledButton(
-                    onPressed: () async {
-                      AppAnalytics.unlockDurationSelected(selected);
-                      Navigator.pop(ctx);
-                      final saved = await _unlockForMinutes(selected);
-                      if (!mounted) return;
-                      if (saved) {
-                        AppAnalytics.unlockStarted(selected);
-                        _snack("Apps unlocked for $selected minutes.");
-                      }
-                    },
-                    child: const Text("Start"),
+                    _isPremium
+                        ? "Premium unlocks up to $maxUnlockMinutes minutes."
+                        : "Free unlocks up to $freeUnlockMinutes minutes.",
+                    style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                          color: cs.onSurfaceVariant,
+                        ),
+                    textAlign: TextAlign.center,
                   ),
                 ],
               ),
-              const SizedBox(height: 10),
-              Container(
-                decoration: BoxDecoration(
-                  color: cs.surfaceContainerHighest.withValues(alpha: 0.55),
-                  borderRadius: BorderRadius.circular(18),
-                  border:
-                      Border.all(color: cs.outlineVariant.withValues(alpha: 0.45)),
-                ),
-                height: 180,
-                child: _UnlockDurationWheelPicker(
-                  minMinutes: minUnlockMinutes,
-                  maxMinutes: maxUnlockMinutes,
-                  initialMinutes: selected,
-                  onChanged: (minutes) => selected = minutes,
-                ),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                "How long should your locked apps stay open?",
-                style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
-                      color: cs.onSurfaceVariant,
-                    ),
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ),
-        );
-      },
-    );
+            ),
+          );
+        },
+      );
+    } finally {
+      wheelController.dispose();
+    }
   }
 
   Future<bool> _confirmRelock() async {
@@ -2878,6 +3266,14 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   }
 
   Future<void> _openDifficultyPicker() async {
+    if (!_isPremium) {
+      if (_clampDifficultyForFreeUsers() && mounted) {
+        setState(() {});
+      }
+      _openPremiumPaywall();
+      return;
+    }
+
     final selected = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
@@ -3063,6 +3459,31 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     }
   }
 
+  Future<void> _setPremiumEnabled(bool value) async {
+    await _premiumAccess.setPremiumEnabled(value);
+    if (!mounted) return;
+    _snack(value ? "Premium features enabled." : "Premium features disabled.");
+  }
+
+  void _openPremiumPaywall() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) {
+          var premiumActive = _isPremium;
+          return StatefulBuilder(
+            builder: (ctx, setPaywallState) => PaywallScreen(
+              isPremium: premiumActive,
+              onPremiumChanged: (value) {
+                setPaywallState(() => premiumActive = value);
+                unawaited(_setPremiumEnabled(value));
+              },
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Future<void> _onThemeModeChangedFromSettings(AppThemeMode mode) async {
     final changed = mode != widget.themeMode;
     await widget.onThemeModeChanged(mode);
@@ -3081,6 +3502,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     final previousTab = _tab;
     if (_tab == 1 && index != 1) {
       _extraPuzzleMode = false;
+      _resetPremiumPuzzleActionState(notify: false);
     }
     setState(() => _tab = index);
     if (index != previousTab) {
@@ -3124,6 +3546,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
             HomeTab(
               active: _tab == 0,
               prewarmBanner: _bannerPrewarmEnabled[0],
+              adsDisabled: _isPremium,
               lockEnabled: _lockEnabled,
               indefiniteUnlock: _indefiniteUnlock,
               unlockRemaining: _unlockRemaining,
@@ -3131,13 +3554,20 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
               lockedSelectionCount: _lockedSelectionCount,
               lockedSelectionSummaryLines: _lockedSelectionSummaryLines,
               lockedSelectionPreviewRevision: _appLockSelectionPreviewRevision,
-              difficulty: _difficulty,
+              difficulty: _effectiveDifficulty,
               solved: _canUnlockApps,
               timedUnlockActive: timedUnlockActive,
               statSolved: _statSolved,
               statBestRating: _statBestRating,
               accuracyPct: _accuracyPct,
               iconsByPkg: _iconsByPkg,
+              emergencyUnlockRemaining: _emergencyUnlock.remainingToday,
+              emergencyUnlockActiveRemaining:
+                  _homeEmergencyUnlockActiveRemaining,
+              emergencyUnlockBusy: _homeEmergencyUnlockBusy,
+              onEmergencyUnlock: () {
+                unawaited(_onEmergencyUnlockFromHome());
+              },
               onEditLockedApps: () {
                 AppAnalytics.editLockedAppsTapped();
                 unawaited(_openAppPicker());
@@ -3158,6 +3588,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
             PuzzleTab(
               active: _tab == 1,
               prewarmBanner: _bannerPrewarmEnabled[1],
+              adsDisabled: _isPremium,
               puzzle: _puzzle,
               loading: _loadingPuzzle,
               loadError: _loadError,
@@ -3168,8 +3599,12 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
               userPlaysBlack: _userPlaysBlack,
               isChecking: _isChecking,
               hintEnabled: _hintAvailable,
+              hintStatusLabel:
+                  _puzzleActionStatusLabel(_RewardedPuzzleAction.hint),
               onHint: _onHintPressed,
               skipEnabled: _skipAvailable,
+              skipStatusLabel:
+                  _puzzleActionStatusLabel(_RewardedPuzzleAction.skip),
               onSkip: _onSkipPressed,
               onUnlockApps: () {
                 unawaited(_openUnlockAppsFlow());
@@ -3181,14 +3616,18 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
             SettingsTab(
               active: _tab == 2,
               prewarmBanner: _bannerPrewarmEnabled[2],
+              adsDisabled: _isPremium,
               lockEnabled: _lockEnabled,
               indefiniteUnlock: _indefiniteUnlock,
               unlockRemaining: _unlockRemaining,
-              difficulty: _difficulty,
+              isPremium: _isPremium,
+              difficulty: _effectiveDifficulty,
               themeMode: widget.themeMode,
               onThemeModeChanged: _onThemeModeChangedFromSettings,
               onLockToggle: _onLockToggleFromSettings,
+              onPremiumToggle: _setPremiumEnabled,
               onOpenDifficulty: _openDifficultyPicker,
+              onOpenPremium: _openPremiumPaywall,
               onPrivacyPolicy: _onPrivacyPolicy,
               onFeedback: _onFeedback,
               onRateApp: _onRateApp,
@@ -3208,24 +3647,22 @@ class _UnlockDurationWheelPicker extends StatelessWidget {
   const _UnlockDurationWheelPicker({
     required this.minMinutes,
     required this.maxMinutes,
-    required this.initialMinutes,
+    required this.freeLimitMinutes,
+    required this.isPremium,
+    required this.scrollController,
     required this.onChanged,
   });
 
   final int minMinutes;
   final int maxMinutes;
-  final int initialMinutes;
+  final int freeLimitMinutes;
+  final bool isPremium;
+  final FixedExtentScrollController scrollController;
   final ValueChanged<int> onChanged;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final initialItem = (initialMinutes - minMinutes)
-        .clamp(
-          0,
-          maxMinutes - minMinutes,
-        )
-        .toInt();
 
     return CupertinoTheme(
       data: CupertinoThemeData(
@@ -3243,13 +3680,46 @@ class _UnlockDurationWheelPicker extends StatelessWidget {
         magnification: 1.08,
         squeeze: 1.15,
         useMagnifier: true,
-        scrollController: FixedExtentScrollController(
-          initialItem: initialItem,
-        ),
+        scrollController: scrollController,
         onSelectedItemChanged: (i) => onChanged(minMinutes + i),
         children: List.generate(
           maxMinutes - minMinutes + 1,
-          (i) => Center(child: Text("${minMinutes + i} min")),
+          (i) {
+            final minutes = minMinutes + i;
+            final locked = !isPremium && minutes > freeLimitMinutes;
+            final textStyle = TextStyle(
+              color: locked
+                  ? cs.onSurfaceVariant.withValues(alpha: 0.55)
+                  : cs.onSurface,
+              fontSize: 20,
+              fontWeight: FontWeight.w600,
+            );
+
+            return Center(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text("$minutes min", style: textStyle),
+                  if (locked) ...[
+                    const SizedBox(width: 8),
+                    Icon(
+                      Icons.lock_rounded,
+                      size: 16,
+                      color: cs.onSurfaceVariant.withValues(alpha: 0.55),
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      "Premium",
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                            color: cs.onSurfaceVariant.withValues(alpha: 0.62),
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
+                  ],
+                ],
+              ),
+            );
+          },
         ),
       ),
     );

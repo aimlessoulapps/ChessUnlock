@@ -6,46 +6,52 @@ class PremiumAccessService extends ChangeNotifier {
 
   final Future<SharedPreferences> _prefsFuture;
 
-  static const developerOverridePrefsKey = "premium.developerOverride";
+  static const premiumEnabledPrefsKey = "premium.enabled";
+  static const developerOverridePrefsKey = premiumEnabledPrefsKey;
+  static const _legacyDeveloperOverridePrefsKey = "premium.developerOverride";
+  static const freeUnlockMinutes = 15;
+  static const premiumUnlockMinutes = 30;
+  static const premiumPuzzleActionDelay = Duration(seconds: 30);
 
   bool _isPremium = false;
-  bool _developerPremiumOverride = false;
+  bool _manualPremiumEnabled = false;
 
   bool get isPremium => _isPremium;
-  bool get developerPremiumOverride => kDebugMode && _developerPremiumOverride;
+  bool get premiumEnabled => _manualPremiumEnabled;
+  bool get developerPremiumOverride => _manualPremiumEnabled;
 
   Future<void> refreshPremiumStatus() async {
     final prefs = await _prefsFuture;
-    final developerOverride = kDebugMode
-        ? (prefs.getBool(developerOverridePrefsKey) ?? false)
-        : false;
+    final manualPremiumEnabled = prefs.getBool(premiumEnabledPrefsKey) ??
+        prefs.getBool(_legacyDeveloperOverridePrefsKey) ??
+        false;
     final storeEntitlementActive = await _loadStoreEntitlementStatus();
-    final nextIsPremium = storeEntitlementActive || developerOverride;
+    final nextIsPremium = storeEntitlementActive || manualPremiumEnabled;
     final changed = _isPremium != nextIsPremium ||
-        _developerPremiumOverride != developerOverride;
+        _manualPremiumEnabled != manualPremiumEnabled;
 
     _isPremium = nextIsPremium;
-    _developerPremiumOverride = developerOverride;
+    _manualPremiumEnabled = manualPremiumEnabled;
 
     _debugPremium(
       "active=$_isPremium source=${_premiumSourceLabel(
         storeEntitlementActive: storeEntitlementActive,
-        developerOverride: developerOverride,
+        manualPremiumEnabled: manualPremiumEnabled,
       )}",
     );
 
     if (changed) notifyListeners();
   }
 
-  Future<void> setDeveloperPremiumOverride(bool value) async {
-    if (!kDebugMode) {
-      _debugPremium("developer override ignored outside debug builds");
-      return;
-    }
-
+  Future<void> setPremiumEnabled(bool value) async {
     final prefs = await _prefsFuture;
-    await prefs.setBool(developerOverridePrefsKey, value);
+    await prefs.setBool(premiumEnabledPrefsKey, value);
+    await prefs.setBool(_legacyDeveloperOverridePrefsKey, value);
     await refreshPremiumStatus();
+  }
+
+  Future<void> setDeveloperPremiumOverride(bool value) async {
+    await setPremiumEnabled(value);
   }
 
   Future<bool> _loadStoreEntitlementStatus() async {
@@ -54,10 +60,10 @@ class PremiumAccessService extends ChangeNotifier {
 
   String _premiumSourceLabel({
     required bool storeEntitlementActive,
-    required bool developerOverride,
+    required bool manualPremiumEnabled,
   }) {
     if (storeEntitlementActive) return "store_entitlement";
-    if (developerOverride) return "developer_override";
+    if (manualPremiumEnabled) return "manual_toggle";
     return "none";
   }
 

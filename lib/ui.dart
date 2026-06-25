@@ -10,6 +10,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 
+import 'services/premium_access_service.dart';
+
 class ChessPuzzle {
   final String id;
   final int rating;
@@ -106,7 +108,8 @@ class PremiumNavBar extends StatelessWidget {
           decoration: BoxDecoration(
             color: cs.surfaceContainerHighest.withValues(alpha: 0.72),
             borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.45)),
+            border:
+                Border.all(color: cs.outlineVariant.withValues(alpha: 0.45)),
             boxShadow: [
               BoxShadow(
                 blurRadius: 18,
@@ -120,12 +123,12 @@ class PremiumNavBar extends StatelessWidget {
             ],
           ),
           child: NavigationBar(
-            height: 58,
+            height: 64,
             selectedIndex: index,
             onDestinationSelected: onChanged,
             backgroundColor: Colors.transparent,
             elevation: 0,
-            labelBehavior: NavigationDestinationLabelBehavior.alwaysHide,
+            labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
             destinations: const [
               NavigationDestination(
                 icon: Icon(Icons.grid_view_rounded),
@@ -533,6 +536,7 @@ class ScreenAdHeader extends StatelessWidget {
   final String title;
   final bool active;
   final bool prewarmBanner;
+  final bool adsDisabled;
   final String screenName;
 
   const ScreenAdHeader({
@@ -540,6 +544,7 @@ class ScreenAdHeader extends StatelessWidget {
     required this.title,
     required this.active,
     this.prewarmBanner = false,
+    this.adsDisabled = false,
     required this.screenName,
   });
 
@@ -555,15 +560,19 @@ class ScreenAdHeader extends StatelessWidget {
                 fontWeight: FontWeight.w700,
               ),
         ),
-        const SizedBox(height: 8),
-        BannerAdSlot(
-          key: ValueKey("banner-ad-slot-$screenName"),
-          height: 54,
-          active: active,
-          prewarm: prewarmBanner,
-          screenName: screenName,
-        ),
-        const SizedBox(height: 8),
+        if (adsDisabled)
+          const SizedBox(height: 18)
+        else ...[
+          const SizedBox(height: 8),
+          BannerAdSlot(
+            key: ValueKey("banner-ad-slot-$screenName"),
+            height: 54,
+            active: active,
+            prewarm: prewarmBanner,
+            screenName: screenName,
+          ),
+          const SizedBox(height: 8),
+        ],
       ],
     );
   }
@@ -593,29 +602,53 @@ class OnboardingFlow extends StatefulWidget {
 
 class _OnboardingFlowState extends State<OnboardingFlow> {
   final PageController _pageController = PageController();
+  final TextEditingController _sourceOtherController = TextEditingController();
+  final TextEditingController _distractionOtherController =
+      TextEditingController();
   final Map<String, String> _answers = {};
+  final Set<String> _distractionAnswers = {};
   int _page = 0;
   bool _busy = false;
 
-  static const _pages = 8;
+  static const _pages = 7;
+  static const _sourceOptions = [
+    "Meta ads",
+    "Reddit",
+    "ChatGPT / AI search",
+    "Other",
+  ];
+  static const _distractionOptions = [
+    "Instagram",
+    "YouTube",
+    "Discord",
+    "Reddit",
+    "Other",
+  ];
+  static const _goalOptions = [
+    "Improve chess",
+    "Reduce screen time",
+  ];
 
   bool get _isQuestionPage => _questionKeyForPage(_page) != null;
 
   bool get _canContinue {
     final key = _questionKeyForPage(_page);
+    if (key == "distraction") return _distractionAnswers.isNotEmpty;
     return key == null || _answers.containsKey(key);
   }
 
   @override
   void dispose() {
     _pageController.dispose();
+    _sourceOtherController.dispose();
+    _distractionOtherController.dispose();
     super.dispose();
   }
 
   Future<void> _next() async {
     if (_busy || !_canContinue) return;
 
-    if (_page == 6) {
+    if (_page == 5) {
       setState(() => _busy = true);
       await widget.onPermissionContinue();
       if (!mounted) return;
@@ -648,12 +681,82 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     await widget.onAnswerSelected(key, answer);
   }
 
+  Future<void> _selectSourceAnswer(String answer) async {
+    if (answer == "Other") {
+      await _selectAnswer("source", _customAnswer("Other", _sourceOtherText));
+      return;
+    }
+    await _selectAnswer("source", answer);
+  }
+
+  Future<void> _setSourceOtherAnswer(String value) async {
+    if (_selectedOptionFor("source") != "Other") return;
+    await _selectAnswer("source", _customAnswer("Other", value));
+  }
+
+  Future<void> _toggleDistractionAnswer(String answer) async {
+    setState(() {
+      if (_distractionAnswers.contains(answer)) {
+        _distractionAnswers.remove(answer);
+      } else {
+        _distractionAnswers.add(answer);
+      }
+      _syncDistractionAnswerLocally();
+    });
+
+    final saved = _answers["distraction"];
+    if (saved != null) {
+      await widget.onAnswerSelected("distraction", saved);
+    }
+  }
+
+  Future<void> _setDistractionOtherAnswer(String value) async {
+    if (!_distractionAnswers.contains("Other")) return;
+    setState(() => _syncDistractionAnswerLocally(otherText: value));
+
+    final saved = _answers["distraction"];
+    if (saved != null) {
+      await widget.onAnswerSelected("distraction", saved);
+    }
+  }
+
+  void _syncDistractionAnswerLocally({String? otherText}) {
+    if (_distractionAnswers.isEmpty) {
+      _answers.remove("distraction");
+      return;
+    }
+
+    final ordered = [
+      for (final option in _distractionOptions)
+        if (_distractionAnswers.contains(option))
+          option == "Other"
+              ? _customAnswer("Other", otherText ?? _distractionOtherText)
+              : option,
+    ];
+    _answers["distraction"] = ordered.join(", ");
+  }
+
+  String _customAnswer(String option, String value) {
+    final trimmed = value.trim();
+    return trimmed.isEmpty ? option : "$option: $trimmed";
+  }
+
+  String? _selectedOptionFor(String key) {
+    final answer = _answers[key];
+    if (answer == null) return null;
+    if (answer == "Other" || answer.startsWith("Other: ")) return "Other";
+    return answer;
+  }
+
+  String get _sourceOtherText => _sourceOtherController.text;
+
+  String get _distractionOtherText => _distractionOtherController.text;
+
   String? _questionKeyForPage(int page) {
     return switch (page) {
       1 => "source",
       2 => "distraction",
       3 => "goal",
-      4 => "strictness",
       _ => null,
     };
   }
@@ -716,38 +819,23 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                       ),
                       _QuestionPage(
                         question: "Where did you hear about ChessUnlock?",
-                        options: const [
-                          "App Store / Play Store",
-                          "YouTube",
-                          "Instagram",
-                          "Reddit",
-                          "Friend",
-                          "Search",
-                          "Other",
-                        ],
-                        selected: _answers["source"],
-                        onSelected: (answer) => _selectAnswer("source", answer),
+                        options: _sourceOptions,
+                        selected: _selectedOptionFor("source"),
+                        onSelected: _selectSourceAnswer,
+                        otherController: _sourceOtherController,
+                        onOtherChanged: _setSourceOtherAnswer,
                         textColor: text,
                         mutedColor: muted,
                         cardColor: card,
                         selectedColor: green,
                       ),
-                      _QuestionPage(
-                        question: "What pulls your attention most often?",
-                        options: const [
-                          "Instagram",
-                          "YouTube",
-                          "YouTube Shorts",
-                          "Reddit",
-                          "Discord",
-                          "Snapchat",
-                          "X / Twitter",
-                          "WhatsApp",
-                          "Other",
-                        ],
-                        selected: _answers["distraction"],
-                        onSelected: (answer) =>
-                            _selectAnswer("distraction", answer),
+                      _MultiSelectQuestionPage(
+                        question: "Which apps distract you the most?",
+                        options: _distractionOptions,
+                        selected: _distractionAnswers,
+                        onToggle: _toggleDistractionAnswer,
+                        otherController: _distractionOtherController,
+                        onOtherChanged: _setDistractionOtherAnswer,
                         textColor: text,
                         mutedColor: muted,
                         cardColor: card,
@@ -755,14 +843,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                       ),
                       _QuestionPage(
                         question: "What is your main goal?",
-                        options: const [
-                          "Reduce screen time",
-                          "Improve chess",
-                          "Improve focus",
-                          "Build discipline",
-                          "Study or work better",
-                          "Stop automatic scrolling",
-                        ],
+                        options: _goalOptions,
                         selected: _answers["goal"],
                         onSelected: (answer) => _selectAnswer("goal", answer),
                         textColor: text,
@@ -770,26 +851,11 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                         cardColor: card,
                         selectedColor: green,
                       ),
-                      _QuestionPage(
-                        question: "How strict should ChessUnlock feel?",
-                        options: const [
-                          "Gentle",
-                          "Balanced",
-                          "Strict",
-                        ],
-                        selected: _answers["strictness"],
-                        onSelected: (answer) =>
-                            _selectAnswer("strictness", answer),
-                        textColor: text,
-                        mutedColor: muted,
-                        cardColor: card,
-                        selectedColor: green,
-                      ),
                       const _OnboardingCopyPage(
-                        icon: Icons.psychology_alt_rounded,
-                        title: "Small puzzles. Real progress.",
+                        icon: Icons.extension_rounded,
+                        title: "Small puzzles, real progress",
                         body:
-                            "Solving chess puzzles consistently can build pattern recognition, calculation, and better decision-making. ChessUnlock helps turn every distraction into a small chess habit.",
+                            "A quick puzzle can break the scroll loop. ChessUnlock turns each distraction into a small chess rep, helping you build pattern recognition and calculation over time.",
                         textColor: text,
                         mutedColor: muted,
                         accentColor: green,
@@ -799,11 +865,11 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                             ? Icons.ios_share_rounded
                             : Icons.security_rounded,
                         title: defaultTargetPlatform == TargetPlatform.iOS
-                            ? "Why we need Screen Time permission"
-                            : "Enable App Lock Permissions",
+                            ? "Enable Screen Time Permission"
+                            : "Enable Usage Access",
                         body: defaultTargetPlatform == TargetPlatform.iOS
-                            ? "ChessUnlock needs Screen Time permission so it can let you choose distracting apps and lock them until you solve a chess puzzle. Your selected apps are used for the locking feature, not to spy on your personal content."
-                            : "ChessUnlock needs Usage Access and overlay permission to detect locked apps and show the puzzle screen when you open them.",
+                            ? "Why we need this: ChessUnlock uses Screen Time permission to let you choose distracting apps and lock them until you solve a puzzle.\n\nYour selected apps are used for the locking feature, not to spy on your personal content."
+                            : "Why we need this: ChessUnlock uses Usage Access to recognize when a protected app is opened so it can guide you back to a chess puzzle.\n\nUsage Access only tells ChessUnlock which app is in the foreground. It does not let ChessUnlock read messages, photos, or in-app content.",
                         textColor: text,
                         mutedColor: muted,
                         accentColor: green,
@@ -847,8 +913,8 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                       : Text(
                           switch (_page) {
                             0 => "Get started",
-                            6 => "Continue",
-                            7 => "Choose apps",
+                            5 => "Continue",
+                            6 => "Choose apps",
                             _ => "Continue",
                           },
                         ),
@@ -914,51 +980,60 @@ class _OnboardingCopyPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(vertical: 24),
-      child: Center(
+    return LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(vertical: 24),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 520),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                width: 74,
-                height: 74,
-                decoration: BoxDecoration(
-                  color: accentColor.withValues(alpha: 0.14),
-                  borderRadius: BorderRadius.circular(26),
-                  border: Border.all(color: accentColor.withValues(alpha: 0.28)),
-                  boxShadow: [
-                    BoxShadow(
-                      color: accentColor.withValues(alpha: 0.16),
-                      blurRadius: 34,
-                      offset: const Offset(0, 18),
+          constraints: BoxConstraints(
+            minHeight: max(0.0, constraints.maxHeight - 48),
+          ),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 520),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 74,
+                    height: 74,
+                    decoration: BoxDecoration(
+                      color: accentColor.withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(26),
+                      border: Border.all(
+                        color: accentColor.withValues(alpha: 0.28),
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: accentColor.withValues(alpha: 0.16),
+                          blurRadius: 34,
+                          offset: const Offset(0, 18),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-                child: Icon(icon, color: accentColor, size: 34),
+                    child: Icon(icon, color: accentColor, size: 34),
+                  ),
+                  const SizedBox(height: 28),
+                  Text(
+                    title,
+                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                          color: textColor,
+                          fontWeight: FontWeight.w900,
+                        ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    body,
+                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          color: mutedColor,
+                          height: 1.45,
+                          fontWeight: FontWeight.w600,
+                        ),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
               ),
-              const SizedBox(height: 28),
-              Text(
-                title,
-                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                      color: textColor,
-                      fontWeight: FontWeight.w900,
-                    ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 14),
-              Text(
-                body,
-                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                      color: mutedColor,
-                      height: 1.45,
-                      fontWeight: FontWeight.w600,
-                    ),
-                textAlign: TextAlign.center,
-              ),
-            ],
+            ),
           ),
         ),
       ),
@@ -971,6 +1046,8 @@ class _QuestionPage extends StatelessWidget {
   final List<String> options;
   final String? selected;
   final ValueChanged<String> onSelected;
+  final TextEditingController? otherController;
+  final ValueChanged<String>? onOtherChanged;
   final Color textColor;
   final Color mutedColor;
   final Color cardColor;
@@ -981,6 +1058,8 @@ class _QuestionPage extends StatelessWidget {
     required this.options,
     required this.selected,
     required this.onSelected,
+    this.otherController,
+    this.onOtherChanged,
     required this.textColor,
     required this.mutedColor,
     required this.cardColor,
@@ -1063,8 +1142,194 @@ class _QuestionPage extends StatelessWidget {
                   ),
                 );
               }),
+              if (selected == "Other" && otherController != null) ...[
+                const SizedBox(height: 2),
+                _OtherAnswerField(
+                  controller: otherController!,
+                  onChanged: onOtherChanged,
+                  textColor: textColor,
+                  mutedColor: mutedColor,
+                  cardColor: cardColor,
+                  selectedColor: selectedColor,
+                ),
+              ],
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MultiSelectQuestionPage extends StatelessWidget {
+  final String question;
+  final List<String> options;
+  final Set<String> selected;
+  final ValueChanged<String> onToggle;
+  final TextEditingController? otherController;
+  final ValueChanged<String>? onOtherChanged;
+  final Color textColor;
+  final Color mutedColor;
+  final Color cardColor;
+  final Color selectedColor;
+
+  const _MultiSelectQuestionPage({
+    required this.question,
+    required this.options,
+    required this.selected,
+    required this.onToggle,
+    this.otherController,
+    this.onOtherChanged,
+    required this.textColor,
+    required this.mutedColor,
+    required this.cardColor,
+    required this.selectedColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(vertical: 24),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                question,
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      color: textColor,
+                      fontWeight: FontWeight.w900,
+                    ),
+              ),
+              const SizedBox(height: 22),
+              ...options.map((option) {
+                final isSelected = selected.contains(option);
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: InkWell(
+                    onTap: () => onToggle(option),
+                    borderRadius: BorderRadius.circular(20),
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 15,
+                      ),
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? selectedColor.withValues(alpha: 0.14)
+                            : cardColor,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: isSelected
+                              ? selectedColor.withValues(alpha: 0.8)
+                              : Colors.white.withValues(alpha: 0.08),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.22),
+                            blurRadius: 20,
+                            offset: const Offset(0, 10),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              option,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleSmall
+                                  ?.copyWith(
+                                    color: textColor,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                            ),
+                          ),
+                          Icon(
+                            isSelected
+                                ? Icons.check_box_rounded
+                                : Icons.check_box_outline_blank_rounded,
+                            color: isSelected ? selectedColor : mutedColor,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              }),
+              if (selected.contains("Other") && otherController != null) ...[
+                const SizedBox(height: 2),
+                _OtherAnswerField(
+                  controller: otherController!,
+                  onChanged: onOtherChanged,
+                  textColor: textColor,
+                  mutedColor: mutedColor,
+                  cardColor: cardColor,
+                  selectedColor: selectedColor,
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _OtherAnswerField extends StatelessWidget {
+  final TextEditingController controller;
+  final ValueChanged<String>? onChanged;
+  final Color textColor;
+  final Color mutedColor;
+  final Color cardColor;
+  final Color selectedColor;
+
+  const _OtherAnswerField({
+    required this.controller,
+    required this.onChanged,
+    required this.textColor,
+    required this.mutedColor,
+    required this.cardColor,
+    required this.selectedColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      onChanged: onChanged,
+      maxLength: 40,
+      maxLines: 1,
+      textInputAction: TextInputAction.done,
+      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+            color: textColor,
+            fontWeight: FontWeight.w700,
+          ),
+      cursorColor: selectedColor,
+      decoration: InputDecoration(
+        counterText: "",
+        hintText: "Type a short answer",
+        hintStyle: TextStyle(color: mutedColor),
+        filled: true,
+        fillColor: cardColor,
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 15,
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(20),
+          borderSide: BorderSide(
+            color: selectedColor.withValues(alpha: 0.35),
+          ),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(20),
+          borderSide: BorderSide(color: selectedColor),
         ),
       ),
     );
@@ -1074,6 +1339,7 @@ class _QuestionPage extends StatelessWidget {
 class HomeTab extends StatelessWidget {
   final bool active;
   final bool prewarmBanner;
+  final bool adsDisabled;
   final bool lockEnabled;
   final bool indefiniteUnlock;
   final Duration unlockRemaining;
@@ -1092,6 +1358,10 @@ class HomeTab extends StatelessWidget {
 
   final Map<String, Uint8List> iconsByPkg;
 
+  final int emergencyUnlockRemaining;
+  final Duration emergencyUnlockActiveRemaining;
+  final bool emergencyUnlockBusy;
+  final VoidCallback onEmergencyUnlock;
   final VoidCallback onEditLockedApps;
   final bool showNativeSelectionPreview;
   final VoidCallback onBreakTime;
@@ -1102,6 +1372,7 @@ class HomeTab extends StatelessWidget {
     super.key,
     required this.active,
     required this.prewarmBanner,
+    required this.adsDisabled,
     required this.lockEnabled,
     required this.indefiniteUnlock,
     required this.unlockRemaining,
@@ -1116,6 +1387,10 @@ class HomeTab extends StatelessWidget {
     required this.statBestRating,
     required this.accuracyPct,
     required this.iconsByPkg,
+    required this.emergencyUnlockRemaining,
+    required this.emergencyUnlockActiveRemaining,
+    required this.emergencyUnlockBusy,
+    required this.onEmergencyUnlock,
     required this.onEditLockedApps,
     required this.showNativeSelectionPreview,
     required this.onBreakTime,
@@ -1154,9 +1429,10 @@ class HomeTab extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           ScreenAdHeader(
-            title: "Lock Mode",
+            title: "Home",
             active: active,
             prewarmBanner: prewarmBanner,
+            adsDisabled: adsDisabled,
             screenName: "home",
           ),
           Expanded(
@@ -1298,16 +1574,25 @@ class HomeTab extends StatelessWidget {
                     children: [
                       Row(
                         children: [
-                          Text(
-                            "Locked apps",
-                            style: Theme.of(context)
-                                .textTheme
-                                .labelLarge
-                                ?.copyWith(
-                                  color: cs.onSurfaceVariant,
-                                ),
+                          Expanded(
+                            child: Text(
+                              "Locked apps",
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelLarge
+                                  ?.copyWith(
+                                    color: cs.onSurfaceVariant,
+                                  ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                          const Spacer(),
+                          EmergencyUnlockButton(
+                            remaining: emergencyUnlockRemaining,
+                            activeRemaining: emergencyUnlockActiveRemaining,
+                            busy: emergencyUnlockBusy,
+                            onTap: onEmergencyUnlock,
+                          ),
+                          const SizedBox(width: 8),
                           Text(
                             "$lockedSelectionCount",
                             style: Theme.of(context)
@@ -1436,6 +1721,110 @@ class HomeTab extends StatelessWidget {
   }
 }
 
+class EmergencyUnlockButton extends StatelessWidget {
+  final int remaining;
+  final Duration activeRemaining;
+  final bool busy;
+  final VoidCallback onTap;
+
+  const EmergencyUnlockButton({
+    super.key,
+    required this.remaining,
+    required this.activeRemaining,
+    required this.busy,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final safeRemaining = max(0, remaining);
+    final isActive = activeRemaining > Duration.zero;
+    final activeSeconds = isActive ? max(1, activeRemaining.inSeconds) : 0;
+    final canUse = safeRemaining > 0 && !isActive && !busy;
+    final badgeText = isActive
+        ? _formatActiveRemaining(activeSeconds)
+        : busy
+            ? "..."
+            : "$safeRemaining left";
+
+    return Semantics(
+      button: true,
+      enabled: canUse,
+      label: isActive
+          ? "Emergency unlock active, $badgeText remaining"
+          : "Emergency unlock, 1 minute, $safeRemaining remaining",
+      child: OutlinedButton(
+        onPressed: canUse ? onTap : null,
+        style: OutlinedButton.styleFrom(
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          minimumSize: const Size(0, 34),
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+          visualDensity: VisualDensity.compact,
+          foregroundColor: cs.primary,
+          side: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.8)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(999),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.bolt_rounded, size: 16, color: cs.primary),
+            const SizedBox(width: 5),
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  "Emergency",
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: canUse || isActive
+                            ? cs.primary
+                            : cs.onSurfaceVariant,
+                        fontWeight: FontWeight.w900,
+                      ),
+                ),
+                Text(
+                  "1 min",
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: cs.onSurfaceVariant,
+                        fontWeight: FontWeight.w700,
+                        height: 1.0,
+                      ),
+                ),
+              ],
+            ),
+            const SizedBox(width: 7),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: isActive
+                    ? cs.primary.withValues(alpha: 0.16)
+                    : cs.surfaceContainerHighest.withValues(alpha: 0.7),
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: Text(
+                badgeText,
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: isActive ? cs.primary : cs.onSurfaceVariant,
+                      fontWeight: FontWeight.w900,
+                    ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _formatActiveRemaining(int seconds) {
+    final minutes = seconds ~/ 60;
+    final secs = seconds % 60;
+    return "$minutes:${secs.toString().padLeft(2, '0')}";
+  }
+}
+
 class IosLockedSelectionPreview extends StatelessWidget {
   static const String _viewType = "chesslock/screen_time_selection_preview";
 
@@ -1540,6 +1929,7 @@ class NativeSelectionFallbackSummary extends StatelessWidget {
 class PuzzleTab extends StatelessWidget {
   final bool active;
   final bool prewarmBanner;
+  final bool adsDisabled;
   final ChessPuzzle? puzzle;
   final bool loading;
   final String? loadError;
@@ -1553,9 +1943,11 @@ class PuzzleTab extends StatelessWidget {
 
   // Hint/Skip
   final bool hintEnabled;
+  final String hintStatusLabel;
   final VoidCallback onHint;
 
   final bool skipEnabled;
+  final String skipStatusLabel;
   final VoidCallback onSkip;
   final VoidCallback onUnlockApps;
 
@@ -1568,6 +1960,7 @@ class PuzzleTab extends StatelessWidget {
     super.key,
     required this.active,
     required this.prewarmBanner,
+    required this.adsDisabled,
     required this.puzzle,
     required this.loading,
     required this.loadError,
@@ -1578,8 +1971,10 @@ class PuzzleTab extends StatelessWidget {
     required this.userPlaysBlack,
     required this.isChecking,
     required this.hintEnabled,
+    required this.hintStatusLabel,
     required this.onHint,
     required this.skipEnabled,
+    required this.skipStatusLabel,
     required this.onSkip,
     required this.onUnlockApps,
     required this.hintFromSquare,
@@ -1600,6 +1995,7 @@ class PuzzleTab extends StatelessWidget {
             title: "Puzzle",
             active: active,
             prewarmBanner: prewarmBanner,
+            adsDisabled: adsDisabled,
             screenName: "puzzle",
           ),
           if (loadError != null)
@@ -1650,7 +2046,8 @@ class PuzzleTab extends StatelessWidget {
                                       .withValues(alpha: 0.38),
                                   borderRadius: BorderRadius.circular(16),
                                   border: Border.all(
-                                    color: cs.outlineVariant.withValues(alpha: 0.42),
+                                    color: cs.outlineVariant
+                                        .withValues(alpha: 0.42),
                                   ),
                                 ),
                                 child: Row(
@@ -1679,9 +2076,11 @@ class PuzzleTab extends StatelessWidget {
                                         borderRadius:
                                             BorderRadius.circular(999),
                                         border: Border.all(
-                                          color: cs.primary.withValues(alpha: 0.22),
+                                          color: cs.primary
+                                              .withValues(alpha: 0.22),
                                         ),
-                                        color: cs.primary.withValues(alpha: 0.10),
+                                        color:
+                                            cs.primary.withValues(alpha: 0.10),
                                       ),
                                       child: Text(
                                         "Rating ${puzzle!.rating}",
@@ -1761,6 +2160,7 @@ class PuzzleTab extends StatelessWidget {
                                 child: HintSkipButton(
                                   title: "Hint",
                                   enabled: hintEnabled,
+                                  statusLabel: hintStatusLabel,
                                   onTap: onHint,
                                 ),
                               ),
@@ -1769,6 +2169,7 @@ class PuzzleTab extends StatelessWidget {
                                 child: HintSkipButton(
                                   title: "Skip",
                                   enabled: skipEnabled,
+                                  statusLabel: skipStatusLabel,
                                   onTap: onSkip,
                                 ),
                               ),
@@ -1879,12 +2280,14 @@ class BoardWithHintOverlay extends StatelessWidget {
 class HintSkipButton extends StatelessWidget {
   final String title;
   final bool enabled;
+  final String? statusLabel;
   final VoidCallback onTap;
 
   const HintSkipButton({
     super.key,
     required this.title,
     required this.enabled,
+    this.statusLabel,
     required this.onTap,
   });
 
@@ -1918,7 +2321,7 @@ class HintSkipButton extends StatelessWidget {
               const SizedBox(width: 8),
               Flexible(
                 child: Text(
-                  enabled ? "Tap to use" : "Please wait",
+                  statusLabel ?? (enabled ? "Tap to use" : "Please wait"),
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: cs.onSurfaceVariant,
                         fontWeight: FontWeight.w600,
@@ -1935,22 +2338,58 @@ class HintSkipButton extends StatelessWidget {
   }
 }
 
+class PremiumToggleRow extends StatelessWidget {
+  final bool isPremium;
+  final ValueChanged<bool>? onChanged;
+
+  const PremiumToggleRow({
+    super.key,
+    required this.isPremium,
+    required this.onChanged,
+  });
+
+  static String subtitleFor(bool isPremium) {
+    if (isPremium) {
+      return "No ads, ${PremiumAccessService.premiumUnlockMinutes}-minute unlocks, emergency unlock";
+    }
+    return "Enable premium features for this app";
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SettingsRow(
+      icon: Icons.workspace_premium_rounded,
+      title: "Premium mode",
+      subtitle: subtitleFor(isPremium),
+      trailing: Switch(
+        value: isPremium,
+        onChanged: onChanged,
+      ),
+      onTap: onChanged == null ? () {} : () => onChanged!(!isPremium),
+    );
+  }
+}
+
 // =========================
 // SETTINGS TAB
 // =========================
 class SettingsTab extends StatelessWidget {
   final bool active;
   final bool prewarmBanner;
+  final bool adsDisabled;
   final bool lockEnabled;
   final bool indefiniteUnlock;
   final Duration unlockRemaining;
+  final bool isPremium;
 
   final String difficulty;
 
   final AppThemeMode themeMode;
   final Future<void> Function(AppThemeMode mode) onThemeModeChanged;
   final Future<void> Function(bool value) onLockToggle;
+  final Future<void> Function(bool value) onPremiumToggle;
   final Future<void> Function() onOpenDifficulty;
+  final VoidCallback onOpenPremium;
 
   final Future<void> Function() onPrivacyPolicy;
   final Future<void> Function() onFeedback;
@@ -1960,14 +2399,18 @@ class SettingsTab extends StatelessWidget {
     super.key,
     required this.active,
     required this.prewarmBanner,
+    required this.adsDisabled,
     required this.lockEnabled,
     required this.indefiniteUnlock,
     required this.unlockRemaining,
+    required this.isPremium,
     required this.difficulty,
     required this.themeMode,
     required this.onThemeModeChanged,
     required this.onLockToggle,
+    required this.onPremiumToggle,
     required this.onOpenDifficulty,
+    required this.onOpenPremium,
     required this.onPrivacyPolicy,
     required this.onFeedback,
     required this.onRateApp,
@@ -1992,12 +2435,34 @@ class SettingsTab extends StatelessWidget {
             title: "Settings",
             active: active,
             prewarmBanner: prewarmBanner,
+            adsDisabled: adsDisabled,
             screenName: "settings",
           ),
           Expanded(
             child: ListView(
               padding: const EdgeInsets.only(bottom: 28),
               children: [
+                GlassCard(
+                  child: SettingsRow(
+                    icon: isPremium
+                        ? Icons.verified_rounded
+                        : Icons.workspace_premium_rounded,
+                    title: isPremium
+                        ? "ChessUnlock Premium active"
+                        : "Get ChessUnlock Premium",
+                    subtitle: isPremium
+                        ? "Premium features are unlocked"
+                        : "Unlock premium features",
+                    trailing: Icon(
+                      isPremium
+                          ? Icons.check_circle_rounded
+                          : Icons.chevron_right_rounded,
+                      color: isPremium ? cs.primary : cs.onSurfaceVariant,
+                    ),
+                    onTap: onOpenPremium,
+                  ),
+                ),
+                const SizedBox(height: 12),
                 Text("Lock controls",
                     style: Theme.of(context)
                         .textTheme
@@ -2017,6 +2482,34 @@ class SettingsTab extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 12),
+                Text("Premium",
+                    style: Theme.of(context)
+                        .textTheme
+                        .labelLarge
+                        ?.copyWith(color: cs.onSurfaceVariant)),
+                const SizedBox(height: 8),
+                GlassCard(
+                  child: Column(
+                    children: [
+                      PremiumToggleRow(
+                        isPremium: isPremium,
+                        onChanged: onPremiumToggle,
+                      ),
+                      Divider(
+                          height: 8,
+                          color: cs.outlineVariant.withValues(alpha: 0.35)),
+                      SettingsRow(
+                        icon: Icons.info_outline_rounded,
+                        title: "Premium details",
+                        subtitle: "See all premium features",
+                        trailing: Icon(Icons.chevron_right_rounded,
+                            color: cs.onSurfaceVariant),
+                        onTap: onOpenPremium,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
                 Text("Puzzle settings",
                     style: Theme.of(context)
                         .textTheme
@@ -2027,10 +2520,17 @@ class SettingsTab extends StatelessWidget {
                   child: SettingsRow(
                     icon: Icons.extension_rounded,
                     title: "Difficulty",
-                    subtitle: "Controls the next puzzle request",
+                    subtitle: isPremium
+                        ? "Controls the next puzzle request"
+                        : "Premium feature. Free uses Normal (1500)",
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        if (!isPremium) ...[
+                          Icon(Icons.lock_rounded,
+                              size: 18, color: cs.onSurfaceVariant),
+                          const SizedBox(width: 6),
+                        ],
                         Text(
                           getDifficultyDisplayName(difficulty),
                           style: Theme.of(context)
@@ -2555,10 +3055,12 @@ class _AppSelectionPageState extends State<AppSelectionPage> {
                           width: double.infinity,
                           padding: const EdgeInsets.all(14),
                           decoration: BoxDecoration(
-                            color: cs.surfaceContainerHighest.withValues(alpha: 0.62),
+                            color: cs.surfaceContainerHighest
+                                .withValues(alpha: 0.62),
                             borderRadius: BorderRadius.circular(20),
                             border: Border.all(
-                                color: cs.outlineVariant.withValues(alpha: 0.45)),
+                                color:
+                                    cs.outlineVariant.withValues(alpha: 0.45)),
                           ),
                           child: const Text("Editing disabled."),
                         ),
@@ -2585,7 +3087,8 @@ class _AppSelectionPageState extends State<AppSelectionPage> {
                           return Padding(
                             padding: const EdgeInsets.only(bottom: 10),
                             child: Material(
-                              color: cs.surfaceContainer.withValues(alpha: 0.92),
+                              color:
+                                  cs.surfaceContainer.withValues(alpha: 0.92),
                               borderRadius: BorderRadius.circular(20),
                               clipBehavior: Clip.antiAlias,
                               child: CheckboxListTile(
@@ -2624,8 +3127,8 @@ class _AppSelectionPageState extends State<AppSelectionPage> {
                                         .withValues(alpha: 0.65),
                                     borderRadius: BorderRadius.circular(14),
                                     border: Border.all(
-                                      color:
-                                          cs.outlineVariant.withValues(alpha: 0.45),
+                                      color: cs.outlineVariant
+                                          .withValues(alpha: 0.45),
                                     ),
                                   ),
                                   child: Center(
@@ -2966,6 +3469,163 @@ class ActionTile extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class PaywallScreen extends StatelessWidget {
+  final bool isPremium;
+  final ValueChanged<bool>? onPremiumChanged;
+
+  const PaywallScreen({
+    super.key,
+    required this.isPremium,
+    this.onPremiumChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final premiumActive = isPremium;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("Premium"),
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                "ChessUnlock Premium",
+                style: Theme.of(context).textTheme.headlineLarge?.copyWith(
+                      fontWeight: FontWeight.w900,
+                    ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                "More control. No ads. Longer unlocks.",
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: cs.onSurfaceVariant,
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+              const SizedBox(height: 16),
+              GlassCard(
+                child: Column(
+                  children: [
+                    const _PremiumFeatureRow(
+                      icon: Icons.timer_rounded,
+                      title:
+                          "Unlock apps for up to ${PremiumAccessService.premiumUnlockMinutes} minutes",
+                    ),
+                    const SizedBox(height: 10),
+                    const _PremiumFeatureRow(
+                      icon: Icons.bolt_rounded,
+                      title: "Emergency 1-minute unlock",
+                    ),
+                    const SizedBox(height: 10),
+                    const _PremiumFeatureRow(
+                      icon: Icons.block_rounded,
+                      title: "No ads",
+                    ),
+                    const SizedBox(height: 10),
+                    const _PremiumFeatureRow(
+                      icon: Icons.tune_rounded,
+                      title: "Choose puzzle difficulty",
+                    ),
+                    const SizedBox(height: 10),
+                    _PremiumFeatureRow(
+                      icon: Icons.lightbulb_rounded,
+                      title:
+                          "Hint and skip without ads, with a short ${PremiumAccessService.premiumPuzzleActionDelay.inSeconds}-second wait",
+                    ),
+                    const SizedBox(height: 10),
+                    const _PremiumFeatureRow(
+                      icon: Icons.favorite_rounded,
+                      title: "Support ChessUnlock development",
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              GlassCard(
+                child: PremiumToggleRow(
+                  isPremium: premiumActive,
+                  onChanged: onPremiumChanged,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                "Monthly subscription. Cancel anytime.",
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: cs.onSurfaceVariant,
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+              const SizedBox(height: 12),
+              FilledButton(
+                onPressed: () {
+                  onPremiumChanged?.call(true);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text("Subscription setup coming soon"),
+                    ),
+                  );
+                },
+                child: const Text("Continue / Subscribe Monthly"),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton(
+                onPressed: () {
+                  onPremiumChanged?.call(true);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text("Purchase restored"),
+                    ),
+                  );
+                },
+                child: const Text("Restore Purchase"),
+              ),
+              TextButton(
+                onPressed: () => Navigator.maybePop(context),
+                child: const Text("Not now"),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PremiumFeatureRow extends StatelessWidget {
+  final IconData icon;
+  final String title;
+
+  const _PremiumFeatureRow({
+    required this.icon,
+    required this.title,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        Icon(icon, color: cs.primary),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            title,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+        ),
+      ],
     );
   }
 }

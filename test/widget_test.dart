@@ -75,7 +75,7 @@ void main() {
     }
 
     expect(find.byType(MaterialApp), findsOneWidget);
-    expect(find.text('Lock Mode'), findsOneWidget);
+    expect(find.text('Home'), findsAtLeastNWidgets(1));
     expect(find.text('Locked apps'), findsOneWidget);
     expect(find.text('Solve puzzle to unlock apps'), findsOneWidget);
 

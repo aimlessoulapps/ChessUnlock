@@ -36,6 +36,7 @@ object PrefBridge {
     enum class EmergencyUnlockResult {
         UNLOCKED,
         NOT_PREMIUM,
+        ACTIVE,
         LIMIT_REACHED
     }
 
@@ -216,17 +217,8 @@ object PrefBridge {
 
     fun isEmergencyUnlocked(ctx: Context, packageName: String): Boolean {
         val prefs = watcherPrefs(ctx)
-        val unlockUntilMs = prefs.getLong(K_EMERGENCY_UNLOCK_UNTIL_MS, 0L)
         val unlockedPackage = prefs.getString(K_EMERGENCY_UNLOCK_PACKAGE, null)
-        val now = System.currentTimeMillis()
-
-        if (unlockUntilMs <= now) {
-            if (unlockUntilMs > 0L || unlockedPackage != null) {
-                prefs.edit()
-                    .remove(K_EMERGENCY_UNLOCK_PACKAGE)
-                    .remove(K_EMERGENCY_UNLOCK_UNTIL_MS)
-                    .apply()
-            }
+        if (getEmergencyUnlockActiveRemainingMs(ctx) <= 0L) {
             return false
         }
 
@@ -237,6 +229,10 @@ object PrefBridge {
         val prefs = watcherPrefs(ctx)
         if (!prefs.getBoolean(K_PREMIUM_ACTIVE, false)) {
             return EmergencyUnlockResult.NOT_PREMIUM
+        }
+
+        if (getEmergencyUnlockActiveRemainingMs(ctx) > 0L) {
+            return EmergencyUnlockResult.ACTIVE
         }
 
         val usage = normalizedEmergencyUsage(ctx)
@@ -256,6 +252,30 @@ object PrefBridge {
             .apply()
 
         return EmergencyUnlockResult.UNLOCKED
+    }
+
+    fun getEmergencyUnlockActiveRemainingMs(ctx: Context): Long {
+        val prefs = watcherPrefs(ctx)
+        val unlockUntilMs = prefs.getLong(K_EMERGENCY_UNLOCK_UNTIL_MS, 0L)
+        val unlockedPackage = prefs.getString(K_EMERGENCY_UNLOCK_PACKAGE, null)
+        val now = System.currentTimeMillis()
+
+        if (unlockUntilMs <= now) {
+            if (unlockUntilMs > 0L || unlockedPackage != null) {
+                prefs.edit()
+                    .remove(K_EMERGENCY_UNLOCK_PACKAGE)
+                    .remove(K_EMERGENCY_UNLOCK_UNTIL_MS)
+                    .apply()
+            }
+            return 0L
+        }
+
+        return unlockUntilMs - now
+    }
+
+    fun getEmergencyUnlockRemaining(ctx: Context): Int {
+        val usage = normalizedEmergencyUsage(ctx)
+        return (usage.limit - usage.count).coerceAtLeast(0)
     }
 
     private data class EmergencyUsage(
