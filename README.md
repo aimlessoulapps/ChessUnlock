@@ -11,7 +11,6 @@ Other things toa add in future updates
 5 - graph of users rating going up and down after each puzzle making the solving of the puzzles interactive
 
 
-
 A new Flutter project.
 
 ## Getting Started
