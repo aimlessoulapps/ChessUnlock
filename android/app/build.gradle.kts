@@ -89,7 +89,7 @@ android {
 
         release {
             // Release MUST be signed with your upload key.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
 
             // Optional later:
             // isMinifyEnabled = true
