@@ -1,7 +1,7 @@
 name: chessUnlock
 description: ChessUnLock
 publish_to: "none"
-version: 1.0.9+10
+version: 1.0.10+11
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
@@ -21,6 +21,7 @@ dependencies:
     path: packages/advanced_chess_board
   google_mobile_ads: ^8.0.0
   firebase_crashlytics: ^5.2.2
+  purchases_flutter: ^10.4.0
 
 dev_dependencies:
   flutter_test:
