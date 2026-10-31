@@ -33,7 +33,7 @@ final class DeviceActivityMonitorExtension: DeviceActivityMonitor {
       return
     }
     debugLog("eventDidReachThreshold fired; event=\(event.rawValue)")
-    relockFromMonitor(action: "eventDidReachThreshold", requireExpired: false)
+    relockFromMonitor(action: "eventDidReachThreshold", requireExpired: true)
   }
 
   override func intervalDidEnd(for activity: DeviceActivityName) {

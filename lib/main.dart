@@ -1463,6 +1463,9 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       if (_lockEnabled) {
         await _appLock.startEnforcement();
       } else {
+        if (!_appLock.usesNativeAppPicker) {
+          await _appLock.startEnforcement();
+        }
         await _appLock.hideActiveBlocker();
       }
     } else {
@@ -1612,7 +1615,14 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     return saved;
   }
 
-  Future<bool> _unlockForMinutes(int? minutes) async {
+  Future<bool> _unlockForMinutes(int? minutes, {bool emergency = false}) async {
+    if (minutes != null &&
+        !(emergency
+            ? _isPremium && minutes == EmergencyUnlockService.unlockMinutes
+            : _premiumAccess.canUnlockForMinutes(minutes))) {
+      _snack("This unlock duration isn't available.");
+      return false;
+    }
     if (minutes == null) {
       _indefiniteUnlock = true;
       _unlockedUntil = null;
@@ -1626,18 +1636,27 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     }
 
     _lockEnabled = false;
-    _resetSolvedUnlockFlow();
     if (mounted) setState(() {});
 
     final saved =
         await _syncLockStateToStorageAndWatcher(includeUnlockState: true);
 
-    if (saved) {
+    try {
+      if (!saved) throw StateError("Couldn't save unlock state");
       await _appLock.unlockFor(
         minutes == null ? null : Duration(minutes: minutes),
+        unlockUntilMs: _unlockedUntil?.millisecondsSinceEpoch,
       );
+      if (minutes != null && !emergency) {
+        await _premiumAccess.saveUnlockMinutes(minutes);
+      }
+    } catch (_) {
+      await _relockNow(resetPuzzle: false);
+      _snack("Couldn't start unlock. Please try again.");
+      return false;
     }
 
+    _resetSolvedUnlockFlow();
     _queuePuzzleRefresh("unlock");
     if (mounted) setState(() {});
     return saved;
@@ -1654,7 +1673,10 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
         await _syncLockStateToStorageAndWatcher(includeUnlockState: true);
 
     if (saved) {
-      await _appLock.unlockFor(const Duration(hours: 24));
+      await _appLock.unlockFor(
+        const Duration(hours: 24),
+        unlockUntilMs: _unlockedUntil?.millisecondsSinceEpoch,
+      );
     }
 
     _queuePuzzleRefresh("unlock24h");
@@ -2099,7 +2121,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
   String _puzzleActionStatusLabel(_RewardedPuzzleAction action) {
     if (!_isPremium) {
-      return _rewardedPuzzleActionAvailable ? "Tap to use" : "Please wait";
+      return _rewardedPuzzleActionAvailable ? "(with ad)" : "Please wait";
     }
     if (!_rewardedPuzzleActionAvailable) return "Please wait";
     if (_premiumPuzzleActionReady(action)) return "Ready";
@@ -2960,8 +2982,10 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
         return;
       }
 
-      final saved =
-          await _unlockForMinutes(EmergencyUnlockService.unlockMinutes);
+      final saved = await _unlockForMinutes(
+        EmergencyUnlockService.unlockMinutes,
+        emergency: true,
+      );
       if (!mounted) return;
       if (saved) {
         _homeEmergencyUnlockActiveUntil = DateTime.now().add(
@@ -3015,13 +3039,13 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       return;
     }
 
-    const minUnlockMinutes = 1;
-    const maxUnlockMinutes = PremiumAccessService.premiumUnlockMinutes;
+    const options = PremiumAccessService.unlockMinuteOptions;
     const freeUnlockMinutes = PremiumAccessService.freeUnlockMinutes;
-    var selected = 10.clamp(minUnlockMinutes, maxUnlockMinutes).toInt();
+    var selected = await _premiumAccess.loadUnlockMinutes();
+    if (!mounted) return;
     var lastValidFreeSelection = min(selected, freeUnlockMinutes);
     final wheelController = FixedExtentScrollController(
-      initialItem: selected - minUnlockMinutes,
+      initialItem: options.indexOf(selected),
     );
 
     try {
@@ -3056,16 +3080,16 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
                       FilledButton(
                         onPressed: () async {
                           if (!_isPremium && selected > freeUnlockMinutes) {
-                            final clamped = lastValidFreeSelection
-                                .clamp(minUnlockMinutes, freeUnlockMinutes)
-                                .toInt();
+                            final clamped = lastValidFreeSelection;
                             setSheetState(() => selected = clamped);
                             await wheelController.animateToItem(
-                              clamped - minUnlockMinutes,
+                              options.indexOf(clamped),
                               duration: const Duration(milliseconds: 220),
                               curve: Curves.easeOutCubic,
                             );
-                            _openPremiumPaywall();
+                            if (!ctx.mounted) return;
+                            await _openPremiumPaywall();
+                            if (ctx.mounted) setSheetState(() {});
                             return;
                           }
 
@@ -3093,8 +3117,6 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
                     ),
                     height: 180,
                     child: _UnlockDurationWheelPicker(
-                      minMinutes: minUnlockMinutes,
-                      maxMinutes: maxUnlockMinutes,
                       freeLimitMinutes: freeUnlockMinutes,
                       isPremium: _isPremium,
                       scrollController: wheelController,
@@ -3108,9 +3130,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
                   ),
                   const SizedBox(height: 10),
                   Text(
-                    _isPremium
-                        ? "Premium unlocks up to $maxUnlockMinutes minutes."
-                        : "Free unlocks up to $freeUnlockMinutes minutes.",
+                    "Premium unlocks up to 3 hours.",
                     style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
                           color: cs.onSurfaceVariant,
                         ),
@@ -3465,8 +3485,8 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     _snack(value ? "Premium features enabled." : "Premium features disabled.");
   }
 
-  void _openPremiumPaywall() {
-    Navigator.of(context).push(
+  Future<void> _openPremiumPaywall() async {
+    await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) {
           var premiumActive = _isPremium;
@@ -3645,16 +3665,12 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
 class _UnlockDurationWheelPicker extends StatelessWidget {
   const _UnlockDurationWheelPicker({
-    required this.minMinutes,
-    required this.maxMinutes,
     required this.freeLimitMinutes,
     required this.isPremium,
     required this.scrollController,
     required this.onChanged,
   });
 
-  final int minMinutes;
-  final int maxMinutes;
   final int freeLimitMinutes;
   final bool isPremium;
   final FixedExtentScrollController scrollController;
@@ -3681,11 +3697,12 @@ class _UnlockDurationWheelPicker extends StatelessWidget {
         squeeze: 1.15,
         useMagnifier: true,
         scrollController: scrollController,
-        onSelectedItemChanged: (i) => onChanged(minMinutes + i),
+        onSelectedItemChanged: (i) =>
+            onChanged(PremiumAccessService.unlockMinuteOptions[i]),
         children: List.generate(
-          maxMinutes - minMinutes + 1,
+          PremiumAccessService.unlockMinuteOptions.length,
           (i) {
-            final minutes = minMinutes + i;
+            final minutes = PremiumAccessService.unlockMinuteOptions[i];
             final locked = !isPremium && minutes > freeLimitMinutes;
             final textStyle = TextStyle(
               color: locked
@@ -3699,7 +3716,10 @@ class _UnlockDurationWheelPicker extends StatelessWidget {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text("$minutes min", style: textStyle),
+                  Text(
+                    PremiumAccessService.formatUnlockMinutes(minutes),
+                    style: textStyle,
+                  ),
                   if (locked) ...[
                     const SizedBox(width: 8),
                     Icon(

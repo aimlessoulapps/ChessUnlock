@@ -1558,8 +1558,11 @@ class HomeTab extends StatelessWidget {
                             child: StatChip(
                               label: "Accuracy",
                               value:
-                                  "${accuracyPct.isNaN ? 0 : accuracyPct.round()}%",
+                                  "${accuracyPct.isFinite ? accuracyPct.round() : 0}%",
                               icon: Icons.insights_rounded,
+                              warning: statSolved > 0 &&
+                                  accuracyPct.isFinite &&
+                                  accuracyPct < 80,
                             ),
                           ),
                         ],
@@ -3306,12 +3309,14 @@ class StatChip extends StatelessWidget {
   final String label;
   final String value;
   final IconData icon;
+  final bool warning;
 
   const StatChip({
     super.key,
     required this.label,
     required this.value,
     required this.icon,
+    this.warning = false,
   });
 
   @override
@@ -3326,7 +3331,26 @@ class StatChip extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(icon, size: 18, color: cs.primary),
+          Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Icon(icon, size: 18, color: cs.primary),
+              if (warning)
+                Positioned(
+                  top: -3,
+                  right: -3,
+                  child: Container(
+                    key: const ValueKey("accuracyWarningDot"),
+                    width: 6,
+                    height: 6,
+                    decoration: const BoxDecoration(
+                      color: Colors.red,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+            ],
+          ),
           const SizedBox(width: 6),
           Expanded(
             child: Column(
@@ -3339,10 +3363,10 @@ class StatChip extends StatelessWidget {
                         ?.copyWith(color: cs.onSurfaceVariant)),
                 const SizedBox(height: 1),
                 Text(value,
-                    style: Theme.of(context)
-                        .textTheme
-                        .titleSmall
-                        ?.copyWith(fontWeight: FontWeight.w800)),
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                          color: warning ? Colors.red : null,
+                        )),
               ],
             ),
           ),

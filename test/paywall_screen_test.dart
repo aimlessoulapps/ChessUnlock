@@ -15,7 +15,7 @@ void main() {
 
     expect(find.text("ChessUnlock Premium"), findsOneWidget);
     expect(find.text("More control. No ads. Longer unlocks."), findsOneWidget);
-    expect(find.text("Unlock apps for up to 30 minutes"), findsOneWidget);
+    expect(find.text("Unlock apps for up to 180 minutes"), findsOneWidget);
     expect(find.text("Emergency 1-minute unlock"), findsOneWidget);
     expect(find.text("No ads"), findsOneWidget);
     expect(find.text("Choose puzzle difficulty"), findsOneWidget);

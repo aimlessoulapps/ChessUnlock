@@ -319,6 +319,10 @@ final class ScreenTimeBridge: NSObject {
         result(operationPayload(success: true, action: "syncLockState", shielded: false))
       } else if unlockUntilMs > currentTimeMs() {
         let scheduleResult = scheduleRelockMonitoring(unlockUntilMs: unlockUntilMs)
+        guard scheduleResult.scheduled else {
+          result(relockAfterSchedulingFailure(scheduleResult, action: "syncLockState"))
+          return
+        }
         clearShieldSettings()
         result(
           operationPayload(
@@ -419,6 +423,10 @@ final class ScreenTimeBridge: NSObject {
           unlockUntilMs: unlockUntilMs,
           requestedDurationMs: requestedDurationMs
         )
+        if let scheduleResult, !scheduleResult.scheduled {
+          result(relockAfterSchedulingFailure(scheduleResult, action: "unlockFor"))
+          return
+        }
       } else {
         stopRelockMonitoring()
       }
@@ -642,17 +650,13 @@ private extension ScreenTimeBridge {
     }
 
     let calendar = Calendar.current
-    let startDate = Date()
     let durationMs = requestedDurationMs ?? (unlockUntilMs - nowMs)
-    let useMinimumFallback = durationMs > 0 && durationMs < minimumNativeRelockIntervalMs
-    let monitorUntilMs: Int64
-    if useMinimumFallback {
-      monitorUntilMs = nowMs + minimumNativeRelockIntervalMs
-    } else if requestedDurationMs != nil && durationMs >= minimumNativeRelockIntervalMs {
-      monitorUntilMs = nowMs + durationMs
-    } else {
-      monitorUntilMs = max(unlockUntilMs, nowMs + minimumNativeRelockIntervalMs)
-    }
+    // Round up to whole seconds so intervalDidEnd cannot precede the saved expiry.
+    let monitorUntilMs = ((unlockUntilMs + 999) / 1000) * 1000
+    // Extend the start into the past when resuming near expiry, never the expiry.
+    let monitorStartMs = min(nowMs, monitorUntilMs - minimumNativeRelockIntervalMs - 1000)
+    let useMinimumFallback = monitorStartMs < nowMs
+    let startDate = Date(timeIntervalSince1970: TimeInterval(monitorStartMs) / 1000)
     let endDate = Date(timeIntervalSince1970: TimeInterval(monitorUntilMs) / 1000)
     let startComponents = calendar.dateComponents(
       [.era, .year, .month, .day, .hour, .minute, .second],
@@ -737,6 +741,23 @@ private extension ScreenTimeBridge {
   }
 
   @MainActor
+  private func relockAfterSchedulingFailure(
+    _ scheduleResult: RelockMonitoringResult,
+    action: String
+  ) -> [String: Any] {
+    saveRuntimeState(lockEnabled: true, indefiniteUnlock: false, unlockUntilMs: 0)
+    stopRelockMonitoring()
+    _ = applySelectionShields(action: "\(action)SchedulingFailed")
+    return operationPayload(
+      success: false,
+      action: action,
+      shielded: true,
+      code: "relockSchedulingFailed",
+      errorMessage: scheduleResult.errorMessage ?? "Unable to schedule automatic relocking."
+    )
+  }
+
+  @MainActor
   func reconcileTimedUnlockIfNeeded(action: String) {
     let indefiniteUnlock = sharedDefaults.bool(forKey: indefiniteUnlockStoreKey)
     let unlockUntilMs = Int64(sharedDefaults.integer(forKey: unlockUntilStoreKey))
@@ -750,7 +771,10 @@ private extension ScreenTimeBridge {
       stopRelockMonitoring()
       _ = applySelectionShields(action: "\(action)Expired")
     } else {
-      _ = scheduleRelockMonitoring(unlockUntilMs: unlockUntilMs)
+      let scheduleResult = scheduleRelockMonitoring(unlockUntilMs: unlockUntilMs)
+      if !scheduleResult.scheduled {
+        _ = relockAfterSchedulingFailure(scheduleResult, action: action)
+      }
     }
   }
 

@@ -143,7 +143,7 @@ abstract class AppLockService {
 
   Future<void> stopEnforcement() async {}
 
-  Future<void> unlockFor(Duration? duration) async {}
+  Future<void> unlockFor(Duration? duration, {int? unlockUntilMs}) async {}
 
   Future<void> relockNow() async {}
 }
@@ -514,13 +514,14 @@ class IosScreenTimeAppLockService extends AppLockService {
   }
 
   @override
-  Future<void> unlockFor(Duration? duration) async {
+  Future<void> unlockFor(Duration? duration, {int? unlockUntilMs}) async {
     final now = DateTime.now();
     await _invokeOperation("unlockFor", {
       "durationMs": duration?.inMilliseconds ?? 0,
       "indefinite": duration == null,
-      "unlockUntilMs":
-          duration == null ? 0 : now.add(duration).millisecondsSinceEpoch,
+      "unlockUntilMs": duration == null
+          ? 0
+          : unlockUntilMs ?? now.add(duration).millisecondsSinceEpoch,
     });
   }
 
