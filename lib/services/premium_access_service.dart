@@ -1,14 +1,17 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:purchases_flutter/purchases_flutter.dart';
+import 'revenuecat_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class PremiumAccessService extends ChangeNotifier {
-  PremiumAccessService(this._prefsFuture);
+  PremiumAccessService(this._prefsFuture, {RevenueCatClient? client})
+      : _client = client ?? StoreRevenueCatClient();
 
   final Future<SharedPreferences> _prefsFuture;
 
-  static const premiumEnabledPrefsKey = "premium.enabled";
-  static const developerOverridePrefsKey = premiumEnabledPrefsKey;
-  static const _legacyDeveloperOverridePrefsKey = "premium.developerOverride";
   static const freeUnlockMinutes = 60;
   static const premiumUnlockMinutes = 180;
   static const defaultUnlockMinutes = 15;
@@ -18,30 +21,40 @@ class PremiumAccessService extends ChangeNotifier {
     30,
     45,
     60,
-    75,
-    90,
-    105,
     120,
-    135,
-    150,
-    165,
     180,
   ];
   static const premiumPuzzleActionDelay = Duration(seconds: 30);
 
+  final RevenueCatClient _client;
+  static const entitlementIdentifier = 'premium';
+  static const offeringIdentifier =
+      String.fromEnvironment('REVENUECAT_OFFERING_ID');
   bool _isPremium = false;
-  bool _manualPremiumEnabled = false;
+  bool _configured = false;
+  bool _disposed = false;
+  bool busy = false;
+  Future<void>? _initialization;
+  Future<void>? _refresh;
+  Timer? _expiryTimer;
+  Timer? _refreshTimer;
+  DateTime? _validUntil;
+  Package? monthlyPackage;
+  String? storeMessage;
 
-  bool get isPremium => _isPremium;
-  bool get premiumEnabled => _manualPremiumEnabled;
-  bool get developerPremiumOverride => _manualPremiumEnabled;
+  bool get isPremium =>
+      _isPremium &&
+      (_validUntil == null || DateTime.now().isBefore(_validUntil!));
+  int get premiumValidUntilMs =>
+      isPremium ? _validUntil!.millisecondsSinceEpoch : 0;
+  String? get monthlyPrice => monthlyPackage?.storeProduct.priceString;
 
   bool canUnlockForMinutes(int minutes) =>
       unlockMinuteOptions.contains(minutes) &&
-      minutes <= (_isPremium ? premiumUnlockMinutes : freeUnlockMinutes);
+      minutes <= (isPremium ? premiumUnlockMinutes : freeUnlockMinutes);
 
   int normalizeUnlockMinutes(int? minutes) {
-    final limit = _isPremium ? premiumUnlockMinutes : freeUnlockMinutes;
+    final limit = isPremium ? premiumUnlockMinutes : freeUnlockMinutes;
     final clamped =
         (minutes ?? defaultUnlockMinutes).clamp(defaultUnlockMinutes, limit);
     return unlockMinuteOptions.lastWhere((option) => option <= clamped);
@@ -68,58 +81,167 @@ class PremiumAccessService extends ChangeNotifier {
     final hours = minutes ~/ 60;
     final remainder = minutes % 60;
     if (hours == 0) return "$remainder min";
-    return remainder == 0 ? "$hours hr" : "$hours hr $remainder min";
+    return remainder == 0
+        ? "$hours ${hours == 1 ? 'hr' : 'hrs'}"
+        : "$hours hr $remainder min";
   }
 
-  Future<void> refreshPremiumStatus() async {
+  Future<void> initialize() => _initialization ??= _initialize();
+
+  Future<void> _initialize() async {
     final prefs = await _prefsFuture;
-    final manualPremiumEnabled = prefs.getBool(premiumEnabledPrefsKey) ??
-        prefs.getBool(_legacyDeveloperOverridePrefsKey) ??
-        false;
-    final storeEntitlementActive = await _loadStoreEntitlementStatus();
-    final nextIsPremium = storeEntitlementActive || manualPremiumEnabled;
-    final changed = _isPremium != nextIsPremium ||
-        _manualPremiumEnabled != manualPremiumEnabled;
-
-    _isPremium = nextIsPremium;
-    _manualPremiumEnabled = manualPremiumEnabled;
-
-    _debugPremium(
-      "active=$_isPremium source=${_premiumSourceLabel(
-        storeEntitlementActive: storeEntitlementActive,
-        manualPremiumEnabled: manualPremiumEnabled,
-      )}",
-    );
-
-    if (changed) notifyListeners();
+    await prefs.remove('premium.enabled');
+    await prefs.remove('premium.developerOverride');
+    try {
+      await _client.configure();
+      if (_disposed) return;
+      _configured = true;
+      _client.addListener(_applyCustomerInfo);
+      _refreshTimer = Timer.periodic(const Duration(minutes: 5), (_) {
+        unawaited(refreshPremiumStatus());
+      });
+    } catch (_) {
+      storeMessage = 'Subscriptions are unavailable. Please try again.';
+      _initialization = null;
+      if (!_disposed) notifyListeners();
+    }
   }
 
-  Future<void> setPremiumEnabled(bool value) async {
-    final prefs = await _prefsFuture;
-    await prefs.setBool(premiumEnabledPrefsKey, value);
-    await prefs.setBool(_legacyDeveloperOverridePrefsKey, value);
-    await refreshPremiumStatus();
+  Future<void> refreshPremiumStatus() =>
+      _refresh ??= _refreshStatus().whenComplete(() => _refresh = null);
+
+  Future<void> _refreshStatus() async {
+    await initialize();
+    if (!_configured || _disposed) return;
+    try {
+      // RevenueCat owns the persistent cache. Do not replace it with a saved bool
+      // or invalidate it before fetching, so offline startup can use valid data.
+      _applyCustomerInfo(await _client.customerInfo());
+    } catch (_) {
+      // Retain only previously verified, unexpired access on transport failures.
+      if (!isPremium) _setPremium(false);
+    }
   }
 
-  Future<void> setDeveloperPremiumOverride(bool value) async {
-    await setPremiumEnabled(value);
+  void _applyCustomerInfo(CustomerInfo info) {
+    if (_disposed) return;
+    final entitlement = info.entitlements.active[entitlementIdentifier];
+    if (info.entitlements.verification == VerificationResult.failed ||
+        entitlement?.verification == VerificationResult.failed) {
+      // A failed signature never grants access, including through a listener.
+      _setPremium(false);
+      return;
+    }
+    if (entitlement == null ||
+        !entitlement.isActive ||
+        entitlement.store == Store.testStore) {
+      _setPremium(false);
+      return;
+    }
+    final requestDate = DateTime.tryParse(info.requestDate);
+    final expiration = DateTime.tryParse(entitlement.expirationDate ?? '');
+    // Bound fallback access to the SDK's offline grace window and the paid expiry.
+    final cacheLimit =
+        (requestDate ?? DateTime.now()).add(const Duration(days: 3));
+    final previousValidUntil = _validUntil;
+    _validUntil = expiration != null && expiration.isBefore(cacheLimit)
+        ? expiration
+        : cacheLimit;
+    _expiryTimer?.cancel();
+    if (!DateTime.now().isBefore(_validUntil!)) {
+      _setPremium(false);
+      return;
+    }
+    _expiryTimer = Timer(_validUntil!.difference(DateTime.now()), () {
+      _setPremium(false);
+      unawaited(refreshPremiumStatus());
+    });
+    // willRenew is deliberately ignored: cancellation retains paid access.
+    _setPremium(true);
+    if (previousValidUntil != _validUntil && !_disposed) notifyListeners();
   }
 
-  Future<bool> _loadStoreEntitlementStatus() async {
-    return false;
+  void _setPremium(bool value) {
+    final changed = _isPremium != value;
+    _isPremium = value;
+    if (!value) {
+      _validUntil = null;
+      _expiryTimer?.cancel();
+    }
+    if (changed && !_disposed) notifyListeners();
   }
 
-  String _premiumSourceLabel({
-    required bool storeEntitlementActive,
-    required bool manualPremiumEnabled,
-  }) {
-    if (storeEntitlementActive) return "store_entitlement";
-    if (manualPremiumEnabled) return "manual_toggle";
-    return "none";
+  Future<void> loadOffering() async {
+    await initialize();
+    if (!_configured || _disposed) return;
+    try {
+      final offerings = await _client.offerings();
+      final offering = offeringIdentifier.isEmpty
+          ? offerings.current
+          : offerings.all[offeringIdentifier];
+      final package = offering?.monthly;
+      monthlyPackage =
+          package?.storeProduct.subscriptionPeriod == 'P1M' ? package : null;
+      storeMessage = monthlyPackage == null
+          ? 'Monthly subscription is unavailable. Please try again later.'
+          : null;
+    } catch (_) {
+      monthlyPackage = null;
+      storeMessage =
+          'Could not load the subscription. Check your connection and retry.';
+    }
+    if (!_disposed) notifyListeners();
   }
 
-  void _debugPremium(String message) {
-    if (!kDebugMode) return;
-    debugPrint("[premium] $message");
+  Future<String> subscribe() => _transact(restore: false);
+  Future<String> restorePurchases() => _transact(restore: true);
+
+  Future<String> _transact({required bool restore}) async {
+    if (busy) return 'A purchase operation is already in progress.';
+    busy = true;
+    if (!_disposed) notifyListeners();
+    try {
+      await initialize();
+      if (!_configured) return storeMessage ?? 'Subscriptions are unavailable.';
+      if (!restore && monthlyPackage == null) await loadOffering();
+      if (!restore && monthlyPackage == null) {
+        return storeMessage ?? 'Monthly subscription is unavailable.';
+      }
+      final info = restore
+          ? await _client.restore()
+          : await _client.purchase(monthlyPackage!);
+      _applyCustomerInfo(info);
+      // Purchase/restore CustomerInfo is authoritative; the SDK also updates its cache.
+      return isPremium
+          ? (restore ? 'Premium purchases restored.' : 'Premium is now active.')
+          : (restore
+              ? 'No active Premium subscription was found.'
+              : 'Purchase received. Premium will activate when the store confirms payment.');
+    } on PlatformException catch (error) {
+      final code = PurchasesErrorHelper.getErrorCode(error);
+      if (code == PurchasesErrorCode.purchaseCancelledError) {
+        return 'Purchase cancelled.';
+      }
+      if (code == PurchasesErrorCode.paymentPendingError) {
+        return 'Payment is pending. Premium will activate after approval.';
+      }
+      return restore
+          ? 'Could not restore purchases. Please try again.'
+          : 'Purchase failed. Please try again.';
+    } catch (_) {
+      return 'The store is unavailable. Please try again.';
+    } finally {
+      busy = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _expiryTimer?.cancel();
+    _refreshTimer?.cancel();
+    if (_configured) _client.removeListener(_applyCustomerInfo);
+    super.dispose();
   }
 }

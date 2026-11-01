@@ -20,6 +20,7 @@ object PrefBridge {
     private const val K_OPEN_PUZZLE_REQUESTED = "openPuzzleRequested"
     private const val K_OPEN_PAYWALL_REQUESTED = "openPaywallRequested"
     private const val K_PREMIUM_ACTIVE = "premiumActive"
+    private const val K_PREMIUM_VALID_UNTIL_MS = "premiumValidUntilMs"
     private const val K_EMERGENCY_UNLOCK_DAY_KEY = "emergencyUnlockDayKey"
     private const val K_EMERGENCY_UNLOCK_COUNT = "emergencyUnlockCount"
     private const val K_EMERGENCY_UNLOCK_DAILY_LIMIT = "emergencyUnlockDailyLimit"
@@ -30,12 +31,11 @@ object PrefBridge {
         "flutter.premium.emergencyUnlock.dayKey.v1"
     private const val FLUTTER_EMERGENCY_UNLOCK_COUNT =
         "flutter.premium.emergencyUnlock.count.v1"
-    private const val DEFAULT_EMERGENCY_UNLOCK_DAILY_LIMIT = 3
+    private const val DEFAULT_EMERGENCY_UNLOCK_DAILY_LIMIT = 1
     private const val EMERGENCY_UNLOCK_DURATION_MS = 60_000L
 
     enum class EmergencyUnlockResult {
         UNLOCKED,
-        NOT_PREMIUM,
         ACTIVE,
         LIMIT_REACHED
     }
@@ -60,6 +60,7 @@ object PrefBridge {
             .filterTo(LinkedHashSet()) { it.isNotBlank() && it != ownPackage }
     }
 
+    @Synchronized
     fun saveWatcherState(
         ctx: Context,
         lockedPackages: Set<String>,
@@ -67,11 +68,16 @@ object PrefBridge {
         indefUnlock: Boolean,
         unlockUntilMs: Long,
         premiumActive: Boolean,
+        premiumValidUntilMs: Long,
         emergencyUnlockDayKey: String,
         emergencyUnlockCount: Int,
         emergencyUnlockDailyLimit: Int
     ) {
         val sanitizedLockedPackages = sanitizeLockedPackages(ctx, lockedPackages)
+        watcherPrefs(ctx).edit()
+            .putBoolean(K_PREMIUM_ACTIVE, premiumActive)
+            .putLong(K_PREMIUM_VALID_UNTIL_MS, premiumValidUntilMs)
+            .apply()
         val usage = normalizedEmergencyUsage(
             ctx,
             emergencyUnlockDayKey,
@@ -225,12 +231,9 @@ object PrefBridge {
         return unlockedPackage == packageName
     }
 
+    @Synchronized
     fun tryUseEmergencyUnlock(ctx: Context, packageName: String): EmergencyUnlockResult {
         val prefs = watcherPrefs(ctx)
-        if (!prefs.getBoolean(K_PREMIUM_ACTIVE, false)) {
-            return EmergencyUnlockResult.NOT_PREMIUM
-        }
-
         if (getEmergencyUnlockActiveRemainingMs(ctx) > 0L) {
             return EmergencyUnlockResult.ACTIVE
         }
@@ -252,6 +255,21 @@ object PrefBridge {
             .apply()
 
         return EmergencyUnlockResult.UNLOCKED
+    }
+
+    @Synchronized
+    fun reserveEmergencyUnlockUse(ctx: Context): Boolean {
+        if (getEmergencyUnlockActiveRemainingMs(ctx) > 0L) return false
+        val usage = normalizedEmergencyUsage(ctx)
+        if (usage.count >= usage.limit) return false
+        saveEmergencyUsage(ctx, usage.dayKey, usage.count + 1)
+        return true
+    }
+
+    @Synchronized
+    fun getEmergencyUnlockUsage(ctx: Context): Map<String, Any> {
+        val usage = normalizedEmergencyUsage(ctx)
+        return mapOf("dayKey" to usage.dayKey, "count" to usage.count)
     }
 
     fun getEmergencyUnlockActiveRemainingMs(ctx: Context): Long {
@@ -294,20 +312,29 @@ object PrefBridge {
         val today = todayKey()
         val rawDayKey = dayKey?.takeIf { it.isNotBlank() }
             ?: prefs.getString(K_EMERGENCY_UNLOCK_DAY_KEY, null)
-        val rawCount = count ?: prefs.getInt(K_EMERGENCY_UNLOCK_COUNT, 0)
+        // Never overwrite an overlay use with an older Flutter snapshot.
+        val nativeCount = if (prefs.getString(K_EMERGENCY_UNLOCK_DAY_KEY, null) == today)
+            prefs.getInt(K_EMERGENCY_UNLOCK_COUNT, 0) else 0
+        val flutterPrefs = prefs(ctx)
+        val flutterCount = if (flutterPrefs.getString(FLUTTER_EMERGENCY_UNLOCK_DAY_KEY, null) == today)
+            (flutterPrefs.all[FLUTTER_EMERGENCY_UNLOCK_COUNT] as? Number)?.toInt() ?: 0 else 0
+        val rawCount = maxOf(if (rawDayKey == today) count ?: 0 else 0, nativeCount, flutterCount)
         val rawLimit = limit ?: prefs.getInt(
             K_EMERGENCY_UNLOCK_DAILY_LIMIT,
             DEFAULT_EMERGENCY_UNLOCK_DAILY_LIMIT
         )
-        val normalizedLimit = rawLimit.coerceAtLeast(0)
-        val normalizedCount = if (rawDayKey == today) {
-            rawCount.coerceIn(0, normalizedLimit)
+        val premiumValid = prefs.getBoolean(K_PREMIUM_ACTIVE, false) &&
+            prefs.getLong(K_PREMIUM_VALID_UNTIL_MS, 0L) > System.currentTimeMillis()
+        val normalizedLimit = if (premiumValid) 3 else 1
+        val normalizedCount = if (rawDayKey == today || nativeCount > 0 || flutterCount > 0) {
+            rawCount.coerceIn(0, 3)
         } else {
             0
         }
         val normalized = EmergencyUsage(today, normalizedCount, normalizedLimit)
 
-        if (rawDayKey != today || rawCount != normalizedCount || rawLimit != normalizedLimit) {
+        if (rawDayKey != today || rawCount != normalizedCount || rawLimit != normalizedLimit ||
+            nativeCount != normalizedCount || flutterCount != normalizedCount) {
             prefs.edit()
                 .putString(K_EMERGENCY_UNLOCK_DAY_KEY, normalized.dayKey)
                 .putInt(K_EMERGENCY_UNLOCK_COUNT, normalized.count)

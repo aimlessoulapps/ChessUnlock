@@ -1,3 +1,4 @@
+import 'support/fake_revenuecat.dart';
 import 'dart:convert';
 
 import 'package:chessUnlock/main.dart';
@@ -18,15 +19,31 @@ void main() {
   const ios = MethodChannel('chesslock/screen_time');
   final calls = <MethodCall>[];
   var failScheduling = false;
+  late FakeRevenueCatClient client;
 
   setUp(() {
     calls.clear();
     failScheduling = false;
+    client = FakeRevenueCatClient();
     for (final channel in [android, ios]) {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
         calls.add(call);
         switch (call.method) {
+          case 'getEmergencyUnlockUsage':
+            final prefs = await SharedPreferences.getInstance();
+            return {
+              'dayKey': DateTime.now().toIso8601String().split('T').first,
+              'count': prefs.getInt('premium.emergencyUnlock.count.v1') ?? 0,
+            };
+          case 'reserveEmergencyUnlockUse':
+            final prefs = await SharedPreferences.getInstance();
+            final count = prefs.getInt('premium.emergencyUnlock.count.v1') ?? 0;
+            final limit =
+                client.info.entitlements.active.containsKey('premium') ? 3 : 1;
+            if (count >= limit) return false;
+            await prefs.setInt('premium.emergencyUnlock.count.v1', count + 1);
+            return true;
           case 'getOwnPackageName':
             return 'com.aimlessoul.chessunlock';
           case 'getLaunchableApps':
@@ -75,13 +92,13 @@ void main() {
   Future<void> launch(WidgetTester tester, TargetPlatform platform,
       {bool premium = false, int? savedMinutes}) async {
     debugDefaultTargetPlatformOverride = platform;
+    client.info = customer(premium: premium);
     tester.view.physicalSize = const Size(1080, 2400);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     SharedPreferences.setMockInitialValues({
       'onboardingComplete': true,
-      'premium.enabled': premium,
       'lockedPackages': ['test.locked.app'],
       if (savedMinutes != null)
         PremiumAccessService.unlockDurationPrefsKey: savedMinutes,
@@ -98,6 +115,8 @@ void main() {
     await tester.pumpWidget(MaterialApp(
       home: ChessUnlockShell(
         initialTab: 1,
+        premiumAccess: PremiumAccessService(SharedPreferences.getInstance(),
+            client: client),
         themeMode: AppThemeMode.system,
         onThemeModeChanged: (_) async {},
       ),
@@ -120,7 +139,7 @@ void main() {
     await pumpFrames(tester);
     expect(find.byType(CupertinoPicker), findsOneWidget);
     final wheel = tester.widget<CupertinoPicker>(find.byType(CupertinoPicker));
-    expect(wheel.childDelegate.estimatedChildCount, 12);
+    expect(wheel.childDelegate.estimatedChildCount, 6);
     expect(wheel.itemExtent, 42);
     expect(wheel.magnification, 1.08);
   }
@@ -148,7 +167,7 @@ void main() {
           tester.widget<CupertinoPicker>(find.byType(CupertinoPicker));
       expect(wheel.scrollController!.selectedItem, 2);
       expect(find.text('Premium unlocks up to 3 hours.'), findsOneWidget);
-      await select(tester, 75);
+      await select(tester, 120);
       expect(find.byType(PaywallScreen), findsNothing);
       await tester.tap(find.text('Start'));
       await pumpFrames(tester);
@@ -189,26 +208,85 @@ void main() {
       await disposeApp(tester);
     });
 
-    testWidgets('$platform premium accepts 180 minutes', (tester) async {
+    for (final minutes in PremiumAccessService.unlockMinuteOptions) {
+      testWidgets('$platform premium accepts $minutes minutes', (tester) async {
+        await launch(tester, platform, premium: true);
+        await openWheel(tester);
+        final wheel =
+            tester.widget<CupertinoPicker>(find.byType(CupertinoPicker));
+        expect(wheel.scrollController!.selectedItem, 0);
+        await select(tester, minutes);
+        await tester.tap(find.text('Start'));
+        await pumpFrames(tester);
+        expect(find.byType(PaywallScreen), findsNothing);
+        final prefs = await SharedPreferences.getInstance();
+        expect(
+            prefs.getInt(PremiumAccessService.unlockDurationPrefsKey), minutes);
+        expect(
+            prefs.getInt('unlockUntilMs')! -
+                DateTime.now().millisecondsSinceEpoch,
+            closeTo(Duration(minutes: minutes).inMilliseconds, 5000));
+        if (platform == TargetPlatform.iOS) {
+          final unlock = calls.lastWhere((c) => c.method == 'unlockFor');
+          expect(unlock.arguments['durationMs'], minutes * 60 * 1000);
+        }
+        await disposeApp(tester);
+      });
+    }
+
+    for (final premium in [false, true]) {
+      testWidgets(
+          '$platform emergency quota and one-minute unlock premium=$premium',
+          (tester) async {
+        await launch(tester, platform, premium: premium);
+        HomeTab home() =>
+            tester.widget<HomeTab>(find.byType(HomeTab, skipOffstage: false));
+        expect(home().emergencyUnlockRemaining, premium ? 3 : 1);
+        home().onEmergencyUnlock();
+        await pumpFrames(tester);
+        expect(find.byType(PaywallScreen), findsNothing);
+        expect(home().emergencyUnlockRemaining, premium ? 2 : 0);
+        final prefs = await SharedPreferences.getInstance();
+        expect(prefs.getInt('premium.emergencyUnlock.count.v1'), 1);
+        expect(
+            prefs.getInt('unlockUntilMs')! -
+                DateTime.now().millisecondsSinceEpoch,
+            closeTo(60000, 5000));
+        if (platform == TargetPlatform.iOS) {
+          expect(
+              calls
+                  .lastWhere((c) => c.method == 'unlockFor')
+                  .arguments['durationMs'],
+              60000);
+        }
+        home().onEmergencyUnlock();
+        await pumpFrames(tester);
+        expect(prefs.getInt('premium.emergencyUnlock.count.v1'), 1);
+        client.emit(customer(premium: !premium));
+        await pumpFrames(tester);
+        expect(home().emergencyUnlockRemaining, premium ? 0 : 2);
+        await disposeApp(tester);
+      });
+    }
+
+    testWidgets(
+        '$platform resume refresh revokes premium and restores ad gates',
+        (tester) async {
       await launch(tester, platform, premium: true);
-      await openWheel(tester);
-      final wheel =
-          tester.widget<CupertinoPicker>(find.byType(CupertinoPicker));
-      expect(wheel.scrollController!.selectedItem, 0);
-      await select(tester, 180);
-      await tester.tap(find.text('Start'));
+      expect(puzzleTab(tester).adsDisabled, isTrue);
+      final previousRefreshes = client.refreshes;
+      client.info = customer();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await pumpFrames(tester);
-      expect(find.byType(PaywallScreen), findsNothing);
-      final prefs = await SharedPreferences.getInstance();
-      expect(prefs.getInt(PremiumAccessService.unlockDurationPrefsKey), 180);
+      expect(client.refreshes, greaterThan(previousRefreshes));
+      expect(puzzleTab(tester).adsDisabled, isFalse);
+      expect(puzzleTab(tester).hintStatusLabel, '(with ad)');
       expect(
-          prefs.getInt('unlockUntilMs')! -
-              DateTime.now().millisecondsSinceEpoch,
-          closeTo(const Duration(minutes: 180).inMilliseconds, 5000));
-      if (platform == TargetPlatform.iOS) {
-        final unlock = calls.lastWhere((c) => c.method == 'unlockFor');
-        expect(unlock.arguments['durationMs'], 180 * 60 * 1000);
-      }
+          tester
+              .widget<HomeTab>(find.byType(HomeTab, skipOffstage: false))
+              .emergencyUnlockRemaining,
+          1);
       await disposeApp(tester);
     });
 

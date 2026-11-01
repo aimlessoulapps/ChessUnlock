@@ -64,6 +64,14 @@ class MainActivity : FlutterActivity() {
                     result.success(PrefBridge.consumeOpenPaywallRequest(applicationContext))
                 }
 
+                "reserveEmergencyUnlockUse" -> {
+                    result.success(PrefBridge.reserveEmergencyUnlockUse(applicationContext))
+                }
+
+                "getEmergencyUnlockUsage" -> {
+                    result.success(PrefBridge.getEmergencyUnlockUsage(applicationContext))
+                }
+
                 "syncWatcherState" -> {
                     syncWatcherState(call.arguments)
                     result.success(null)
@@ -151,6 +159,7 @@ class MainActivity : FlutterActivity() {
         val indefUnlock = args["indefiniteUnlock"] as? Boolean ?: false
         val unlockUntilMs = (args["unlockUntilMs"] as? Number)?.toLong() ?: 0L
         val premiumActive = args["premiumActive"] as? Boolean ?: false
+        val premiumValidUntilMs = (args["premiumValidUntilMs"] as? Number)?.toLong() ?: 0L
         val emergencyUnlockDayKey = args["emergencyUnlockDayKey"] as? String ?: ""
         val emergencyUnlockCount = (args["emergencyUnlockCount"] as? Number)?.toInt() ?: 0
         val emergencyUnlockDailyLimit = (args["emergencyUnlockDailyLimit"] as? Number)?.toInt() ?: 0
@@ -162,6 +171,7 @@ class MainActivity : FlutterActivity() {
             indefUnlock,
             unlockUntilMs,
             premiumActive,
+            premiumValidUntilMs,
             emergencyUnlockDayKey,
             emergencyUnlockCount,
             emergencyUnlockDailyLimit

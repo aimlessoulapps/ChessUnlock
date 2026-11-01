@@ -1,17 +1,29 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class EmergencyUnlockService extends ChangeNotifier {
-  EmergencyUnlockService(this._prefsFuture);
+  EmergencyUnlockService(
+    this._prefsFuture, {
+    required bool Function() isPremium,
+    DateTime Function()? now,
+    this.useAndroidQuota = false,
+  })  : _isPremium = isPremium,
+        _now = now ?? DateTime.now;
 
   final Future<SharedPreferences> _prefsFuture;
 
-  static const int dailyLimit = 3;
+  final bool Function() _isPremium;
+  final DateTime Function() _now;
+  final bool useAndroidQuota;
+  bool _recording = false;
+  static const _channel = MethodChannel('chesslock/system');
+  int get dailyLimit => _isPremium() ? 3 : 1;
   static const int unlockMinutes = 1;
   static const dayKeyPrefsKey = "premium.emergencyUnlock.dayKey.v1";
   static const countPrefsKey = "premium.emergencyUnlock.count.v1";
 
-  String _dayKey = _todayKey();
+  String _dayKey = '';
   int _usedToday = 0;
 
   String get dayKey => _dayKey;
@@ -20,13 +32,28 @@ class EmergencyUnlockService extends ChangeNotifier {
   bool get hasUsesRemaining => remainingToday > 0;
 
   Future<void> refreshUsage() async {
+    if (useAndroidQuota) {
+      final usage = await _channel
+          .invokeMapMethod<String, dynamic>('getEmergencyUnlockUsage');
+      if (usage != null) {
+        final nextDay = usage['dayKey'] as String;
+        final nextCount = (usage['count'] as num).toInt().clamp(0, 3);
+        final changed = _dayKey != nextDay || _usedToday != nextCount;
+        _dayKey = nextDay;
+        _usedToday = nextCount;
+        if (changed) notifyListeners();
+        return;
+      }
+    }
     final prefs = await _prefsFuture;
+    // Android's overlay writes the same quota while Flutter is backgrounded.
+    if (useAndroidQuota) await prefs.reload();
     final today = _todayKey();
     final storedDay = prefs.getString(dayKeyPrefsKey);
     final storedCount = prefs.getInt(countPrefsKey) ?? 0;
 
     final nextDay = storedDay == today ? storedDay! : today;
-    final nextCount = storedDay == today ? storedCount.clamp(0, dailyLimit) : 0;
+    final nextCount = storedDay == today ? storedCount.clamp(0, 3) : 0;
     final changed = _dayKey != nextDay || _usedToday != nextCount;
 
     _dayKey = nextDay;
@@ -42,23 +69,36 @@ class EmergencyUnlockService extends ChangeNotifier {
   }
 
   Future<bool> recordUseIfAvailable() async {
-    await refreshUsage();
-    if (!hasUsesRemaining) {
-      _debugEmergency("use denied; daily limit reached used=$_usedToday");
-      return false;
-    }
+    if (_recording) return false;
+    _recording = true;
+    try {
+      if (useAndroidQuota) {
+        final recorded =
+            await _channel.invokeMethod<bool>('reserveEmergencyUnlockUse') ??
+                false;
+        await refreshUsage();
+        return recorded;
+      }
+      await refreshUsage();
+      if (!hasUsesRemaining) {
+        _debugEmergency("use denied; daily limit reached used=$_usedToday");
+        return false;
+      }
 
-    final prefs = await _prefsFuture;
-    _usedToday += 1;
-    await prefs.setString(dayKeyPrefsKey, _dayKey);
-    await prefs.setInt(countPrefsKey, _usedToday);
-    _debugEmergency("use recorded; day=$_dayKey used=$_usedToday");
-    notifyListeners();
-    return true;
+      final prefs = await _prefsFuture;
+      _usedToday += 1;
+      await prefs.setString(dayKeyPrefsKey, _dayKey);
+      await prefs.setInt(countPrefsKey, _usedToday);
+      _debugEmergency("use recorded; day=$_dayKey used=$_usedToday");
+      notifyListeners();
+      return true;
+    } finally {
+      _recording = false;
+    }
   }
 
-  static String _todayKey() {
-    final now = DateTime.now();
+  String _todayKey() {
+    final now = _now();
     final month = now.month.toString().padLeft(2, "0");
     final day = now.day.toString().padLeft(2, "0");
     return "${now.year}-$month-$day";

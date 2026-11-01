@@ -456,7 +456,7 @@ class ForegroundAppWatcherService : Service() {
         overlayEmergencyButton?.alpha = if (enabled || activeMs > 0L) 1.0f else 0.55f
 
         handler.removeCallbacks(emergencyButtonTick)
-        if (overlayShown && activeMs > 0L) {
+        if (overlayShown) {
             handler.postDelayed(emergencyButtonTick, 1000L)
         }
     }
@@ -501,18 +501,6 @@ class ForegroundAppWatcherService : Service() {
             PrefBridge.EmergencyUnlockResult.ACTIVE -> {
                 updateEmergencyButtonState()
                 Toast.makeText(this, "Emergency unlock is already active.", Toast.LENGTH_SHORT).show()
-            }
-            PrefBridge.EmergencyUnlockResult.NOT_PREMIUM -> {
-                Toast.makeText(this, "ChessUnlock Premium required.", Toast.LENGTH_SHORT).show()
-                clearPendingBlockedPackage()
-                suppressOverlayUntilMs = System.currentTimeMillis() + SELF_OPEN_SUPPRESS_MS
-                lastPkg = packageName
-                hideOverlay()
-                PrefBridge.requestOpenPaywall(this)
-                val i = Intent(this, MainActivity::class.java)
-                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                startActivity(i)
-                handler.postDelayed(tick, 300)
             }
             PrefBridge.EmergencyUnlockResult.LIMIT_REACHED -> {
                 updateEmergencyButtonState()

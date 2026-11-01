@@ -327,6 +327,7 @@ TextTheme _safeScaleTextTheme(TextTheme t, double factor) {
 ///
 class ChessUnlockShell extends StatefulWidget {
   final int initialTab;
+  final PremiumAccessService? premiumAccess;
   final AppThemeMode themeMode;
   final Future<void> Function(AppThemeMode mode) onThemeModeChanged;
 
@@ -334,6 +335,7 @@ class ChessUnlockShell extends StatefulWidget {
     super.key,
     this.initialTab = 0,
     required this.themeMode,
+    this.premiumAccess,
     required this.onThemeModeChanged,
   });
 
@@ -527,8 +529,13 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       _prefsFuture,
       difficultyOptions: _difficultyOptions,
     );
-    _premiumAccess = PremiumAccessService(_prefsFuture);
-    _emergencyUnlock = EmergencyUnlockService(_prefsFuture);
+    _premiumAccess = widget.premiumAccess ?? PremiumAccessService(_prefsFuture);
+    _emergencyUnlock = EmergencyUnlockService(
+      _prefsFuture,
+      isPremium: () => _isPremium,
+      useAndroidQuota:
+          !kIsWeb && defaultTargetPlatform == TargetPlatform.android,
+    );
     _appLock = createAppLockService();
     _premiumAccess.addListener(_onPremiumStateChanged);
     _emergencyUnlock.addListener(_onEmergencyUnlockStateChanged);
@@ -539,13 +546,16 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     _init();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      if (!_isPremium) _preloadRewardedAd();
+      if (_premiumStatusReady && !_isPremium) _preloadRewardedAd();
       _scheduleLaunchableAppsPrefetch(reason: "startup");
     });
 
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
       _queueExpirySync();
+      if ((_ticker?.tick ?? 0) % 30 == 0) {
+        unawaited(_emergencyUnlock.refreshUsage());
+      }
       if (_shouldRebuildForTicker()) {
         setState(() {});
       }
@@ -687,6 +697,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     );
   }
 
+  bool _premiumStatusReady = false;
   bool get _isPremium => _premiumAccess.isPremium;
   String get _effectiveDifficulty =>
       _isPremium ? _difficulty : _defaultDifficulty;
@@ -700,13 +711,27 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
   Future<void> _refreshPremiumAndEmergencyState() async {
     await _premiumAccess.refreshPremiumStatus();
+    _premiumStatusReady = true;
     _clampDifficultyForFreeUsers();
     await _emergencyUnlock.refreshUsage();
     if (mounted) setState(() {});
   }
 
+  bool _lastPremiumState = false;
+  int _lastPremiumValidUntilMs = 0;
+
   void _onPremiumStateChanged() {
     if (!mounted) return;
+    final validUntil = _premiumAccess.premiumValidUntilMs;
+    if (_lastPremiumState == _isPremium) {
+      if (_lastPremiumValidUntilMs != validUntil) {
+        _lastPremiumValidUntilMs = validUntil;
+        unawaited(_ensureAppLockReadyIfNeeded());
+      }
+      return;
+    }
+    _lastPremiumValidUntilMs = validUntil;
+    _lastPremiumState = _isPremium;
     _resetPremiumPuzzleActionState(notify: false);
     _clampDifficultyForFreeUsers();
     if (_isPremium) {
@@ -1347,9 +1372,10 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
         indefiniteUnlock: _indefiniteUnlock,
         unlockUntilMs: _unlockedUntil?.millisecondsSinceEpoch ?? 0,
         premiumActive: _isPremium,
+        premiumValidUntilMs: _premiumAccess.premiumValidUntilMs,
         emergencyUnlockDayKey: _emergencyUnlock.dayKey,
         emergencyUnlockCount: _emergencyUnlock.usedToday,
-        emergencyUnlockDailyLimit: EmergencyUnlockService.dailyLimit,
+        emergencyUnlockDailyLimit: _emergencyUnlock.dailyLimit,
       ),
     );
   }
@@ -1616,12 +1642,20 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   }
 
   Future<bool> _unlockForMinutes(int? minutes, {bool emergency = false}) async {
+    await _premiumAccess.refreshPremiumStatus();
     if (minutes != null &&
         !(emergency
-            ? _isPremium && minutes == EmergencyUnlockService.unlockMinutes
+            ? minutes == EmergencyUnlockService.unlockMinutes
             : _premiumAccess.canUnlockForMinutes(minutes))) {
       _snack("This unlock duration isn't available.");
       return false;
+    }
+    if (emergency) {
+      await _syncLockStateToStorageAndWatcher(includeUnlockState: false);
+      if (!await _emergencyUnlock.recordUseIfAvailable()) {
+        _snack("Emergency unlock limit reached for today.");
+        return false;
+      }
     }
     if (minutes == null) {
       _indefiniteUnlock = true;
@@ -2629,7 +2663,13 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     required _RewardedPuzzleAction action,
     required VoidCallback onRewardEarned,
   }) async {
+    if (_isPremium) return _RewardedAdResult.unavailable;
     final ad = _rewardedAd ?? await _loadRewardedAd(reason: "show");
+    if (_isPremium) {
+      ad?.dispose();
+      _rewardedAd = null;
+      return _RewardedAdResult.unavailable;
+    }
     if (ad == null) {
       _debugRewarded(
         "rewarded show unavailable before presentation; "
@@ -2962,26 +3002,20 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
   Future<void> _onEmergencyUnlockFromHome() async {
     if (_homeEmergencyUnlockBusy) return;
+    if (_lockState.isUnlocked) {
+      _snack("Apps are already unlocked.");
+      return;
+    }
 
     if (_homeEmergencyUnlockActiveRemaining > Duration.zero) {
       _snack("Emergency unlock is already active.");
       return;
     }
 
-    if (!_isPremium) {
-      _openPremiumPaywall();
-      return;
-    }
-
     setState(() => _homeEmergencyUnlockBusy = true);
     try {
-      final recorded = await _emergencyUnlock.recordUseIfAvailable();
-      if (!mounted) return;
-      if (!recorded) {
-        _snack("Emergency unlock limit reached for today.");
-        return;
-      }
-
+      await _refreshPremiumAndEmergencyState();
+      await _syncLockStateToStorageAndWatcher(includeUnlockState: false);
       final saved = await _unlockForMinutes(
         EmergencyUnlockService.unlockMinutes,
         emergency: true,
@@ -3337,6 +3371,12 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     );
 
     if (!mounted || selected == null) return;
+    // The entitlement can expire while the difficulty sheet is open.
+    if (!_isPremium) {
+      _clampDifficultyForFreeUsers();
+      await _openPremiumPaywall();
+      return;
+    }
     final previousDifficulty = _difficulty;
     setState(() => _difficulty = selected);
     await _saveDifficulty();
@@ -3479,28 +3519,11 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     }
   }
 
-  Future<void> _setPremiumEnabled(bool value) async {
-    await _premiumAccess.setPremiumEnabled(value);
-    if (!mounted) return;
-    _snack(value ? "Premium features enabled." : "Premium features disabled.");
-  }
-
   Future<void> _openPremiumPaywall() async {
+    unawaited(_premiumAccess.loadOffering());
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) {
-          var premiumActive = _isPremium;
-          return StatefulBuilder(
-            builder: (ctx, setPaywallState) => PaywallScreen(
-              isPremium: premiumActive,
-              onPremiumChanged: (value) {
-                setPaywallState(() => premiumActive = value);
-                unawaited(_setPremiumEnabled(value));
-              },
-            ),
-          );
-        },
-      ),
+          builder: (_) => PaywallScreen(access: _premiumAccess)),
     );
   }
 
@@ -3566,7 +3589,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
             HomeTab(
               active: _tab == 0,
               prewarmBanner: _bannerPrewarmEnabled[0],
-              adsDisabled: _isPremium,
+              adsDisabled: !_premiumStatusReady || _isPremium,
               lockEnabled: _lockEnabled,
               indefiniteUnlock: _indefiniteUnlock,
               unlockRemaining: _unlockRemaining,
@@ -3608,7 +3631,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
             PuzzleTab(
               active: _tab == 1,
               prewarmBanner: _bannerPrewarmEnabled[1],
-              adsDisabled: _isPremium,
+              adsDisabled: !_premiumStatusReady || _isPremium,
               puzzle: _puzzle,
               loading: _loadingPuzzle,
               loadError: _loadError,
@@ -3636,7 +3659,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
             SettingsTab(
               active: _tab == 2,
               prewarmBanner: _bannerPrewarmEnabled[2],
-              adsDisabled: _isPremium,
+              adsDisabled: !_premiumStatusReady || _isPremium,
               lockEnabled: _lockEnabled,
               indefiniteUnlock: _indefiniteUnlock,
               unlockRemaining: _unlockRemaining,
@@ -3645,7 +3668,6 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
               themeMode: widget.themeMode,
               onThemeModeChanged: _onThemeModeChangedFromSettings,
               onLockToggle: _onLockToggleFromSettings,
-              onPremiumToggle: _setPremiumEnabled,
               onOpenDifficulty: _openDifficultyPicker,
               onOpenPremium: _openPremiumPaywall,
               onPrivacyPolicy: _onPrivacyPolicy,

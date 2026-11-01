@@ -603,37 +603,17 @@ class OnboardingFlow extends StatefulWidget {
 class _OnboardingFlowState extends State<OnboardingFlow> {
   final PageController _pageController = PageController();
   final TextEditingController _sourceOtherController = TextEditingController();
-  final TextEditingController _distractionOtherController =
-      TextEditingController();
   final Map<String, String> _answers = {};
-  final Set<String> _distractionAnswers = {};
   int _page = 0;
   bool _busy = false;
 
-  static const _pages = 7;
-  static const _sourceOptions = [
-    "Meta ads",
-    "Reddit",
-    "ChatGPT / AI search",
-    "Other",
-  ];
-  static const _distractionOptions = [
-    "Instagram",
-    "YouTube",
-    "Discord",
-    "Reddit",
-    "Other",
-  ];
-  static const _goalOptions = [
-    "Improve chess",
-    "Reduce screen time",
-  ];
+  static const _pages = 5;
+  static const _sourceOptions = ["Social media", "Google/Ai", "Other"];
 
   bool get _isQuestionPage => _questionKeyForPage(_page) != null;
 
   bool get _canContinue {
     final key = _questionKeyForPage(_page);
-    if (key == "distraction") return _distractionAnswers.isNotEmpty;
     return key == null || _answers.containsKey(key);
   }
 
@@ -641,14 +621,13 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   void dispose() {
     _pageController.dispose();
     _sourceOtherController.dispose();
-    _distractionOtherController.dispose();
     super.dispose();
   }
 
   Future<void> _next() async {
     if (_busy || !_canContinue) return;
 
-    if (_page == 5) {
+    if (_page == 3) {
       setState(() => _busy = true);
       await widget.onPermissionContinue();
       if (!mounted) return;
@@ -694,48 +673,6 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     await _selectAnswer("source", _customAnswer("Other", value));
   }
 
-  Future<void> _toggleDistractionAnswer(String answer) async {
-    setState(() {
-      if (_distractionAnswers.contains(answer)) {
-        _distractionAnswers.remove(answer);
-      } else {
-        _distractionAnswers.add(answer);
-      }
-      _syncDistractionAnswerLocally();
-    });
-
-    final saved = _answers["distraction"];
-    if (saved != null) {
-      await widget.onAnswerSelected("distraction", saved);
-    }
-  }
-
-  Future<void> _setDistractionOtherAnswer(String value) async {
-    if (!_distractionAnswers.contains("Other")) return;
-    setState(() => _syncDistractionAnswerLocally(otherText: value));
-
-    final saved = _answers["distraction"];
-    if (saved != null) {
-      await widget.onAnswerSelected("distraction", saved);
-    }
-  }
-
-  void _syncDistractionAnswerLocally({String? otherText}) {
-    if (_distractionAnswers.isEmpty) {
-      _answers.remove("distraction");
-      return;
-    }
-
-    final ordered = [
-      for (final option in _distractionOptions)
-        if (_distractionAnswers.contains(option))
-          option == "Other"
-              ? _customAnswer("Other", otherText ?? _distractionOtherText)
-              : option,
-    ];
-    _answers["distraction"] = ordered.join(", ");
-  }
-
   String _customAnswer(String option, String value) {
     final trimmed = value.trim();
     return trimmed.isEmpty ? option : "$option: $trimmed";
@@ -750,13 +687,9 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
 
   String get _sourceOtherText => _sourceOtherController.text;
 
-  String get _distractionOtherText => _distractionOtherController.text;
-
   String? _questionKeyForPage(int page) {
     return switch (page) {
       1 => "source",
-      2 => "distraction",
-      3 => "goal",
       _ => null,
     };
   }
@@ -829,28 +762,6 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                         cardColor: card,
                         selectedColor: green,
                       ),
-                      _MultiSelectQuestionPage(
-                        question: "Which apps distract you the most?",
-                        options: _distractionOptions,
-                        selected: _distractionAnswers,
-                        onToggle: _toggleDistractionAnswer,
-                        otherController: _distractionOtherController,
-                        onOtherChanged: _setDistractionOtherAnswer,
-                        textColor: text,
-                        mutedColor: muted,
-                        cardColor: card,
-                        selectedColor: green,
-                      ),
-                      _QuestionPage(
-                        question: "What is your main goal?",
-                        options: _goalOptions,
-                        selected: _answers["goal"],
-                        onSelected: (answer) => _selectAnswer("goal", answer),
-                        textColor: text,
-                        mutedColor: muted,
-                        cardColor: card,
-                        selectedColor: green,
-                      ),
                       const _OnboardingCopyPage(
                         icon: Icons.extension_rounded,
                         title: "Small puzzles, real progress",
@@ -913,8 +824,8 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                       : Text(
                           switch (_page) {
                             0 => "Get started",
-                            5 => "Continue",
-                            6 => "Choose apps",
+                            3 => "Continue",
+                            4 => "Choose apps",
                             _ => "Continue",
                           },
                         ),
@@ -1143,126 +1054,6 @@ class _QuestionPage extends StatelessWidget {
                 );
               }),
               if (selected == "Other" && otherController != null) ...[
-                const SizedBox(height: 2),
-                _OtherAnswerField(
-                  controller: otherController!,
-                  onChanged: onOtherChanged,
-                  textColor: textColor,
-                  mutedColor: mutedColor,
-                  cardColor: cardColor,
-                  selectedColor: selectedColor,
-                ),
-              ],
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _MultiSelectQuestionPage extends StatelessWidget {
-  final String question;
-  final List<String> options;
-  final Set<String> selected;
-  final ValueChanged<String> onToggle;
-  final TextEditingController? otherController;
-  final ValueChanged<String>? onOtherChanged;
-  final Color textColor;
-  final Color mutedColor;
-  final Color cardColor;
-  final Color selectedColor;
-
-  const _MultiSelectQuestionPage({
-    required this.question,
-    required this.options,
-    required this.selected,
-    required this.onToggle,
-    this.otherController,
-    this.onOtherChanged,
-    required this.textColor,
-    required this.mutedColor,
-    required this.cardColor,
-    required this.selectedColor,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(vertical: 24),
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 560),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                question,
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      color: textColor,
-                      fontWeight: FontWeight.w900,
-                    ),
-              ),
-              const SizedBox(height: 22),
-              ...options.map((option) {
-                final isSelected = selected.contains(option);
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: InkWell(
-                    onTap: () => onToggle(option),
-                    borderRadius: BorderRadius.circular(20),
-                    child: Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 15,
-                      ),
-                      decoration: BoxDecoration(
-                        color: isSelected
-                            ? selectedColor.withValues(alpha: 0.14)
-                            : cardColor,
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: isSelected
-                              ? selectedColor.withValues(alpha: 0.8)
-                              : Colors.white.withValues(alpha: 0.08),
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.22),
-                            blurRadius: 20,
-                            offset: const Offset(0, 10),
-                          ),
-                        ],
-                      ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              option,
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .titleSmall
-                                  ?.copyWith(
-                                    color: textColor,
-                                    fontWeight: FontWeight.w800,
-                                  ),
-                            ),
-                          ),
-                          Icon(
-                            isSelected
-                                ? Icons.check_box_rounded
-                                : Icons.check_box_outline_blank_rounded,
-                            color: isSelected ? selectedColor : mutedColor,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                );
-              }),
-              if (selected.contains("Other") && otherController != null) ...[
                 const SizedBox(height: 2),
                 _OtherAnswerField(
                   controller: otherController!,
@@ -2341,41 +2132,6 @@ class HintSkipButton extends StatelessWidget {
   }
 }
 
-class PremiumToggleRow extends StatelessWidget {
-  final bool isPremium;
-  final ValueChanged<bool>? onChanged;
-
-  const PremiumToggleRow({
-    super.key,
-    required this.isPremium,
-    required this.onChanged,
-  });
-
-  static String subtitleFor(bool isPremium) {
-    if (isPremium) {
-      return "No ads, ${PremiumAccessService.premiumUnlockMinutes}-minute unlocks, emergency unlock";
-    }
-    return "Enable premium features for this app";
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SettingsRow(
-      icon: Icons.workspace_premium_rounded,
-      title: "Premium mode",
-      subtitle: subtitleFor(isPremium),
-      trailing: Switch(
-        value: isPremium,
-        onChanged: onChanged,
-      ),
-      onTap: onChanged == null ? () {} : () => onChanged!(!isPremium),
-    );
-  }
-}
-
-// =========================
-// SETTINGS TAB
-// =========================
 class SettingsTab extends StatelessWidget {
   final bool active;
   final bool prewarmBanner;
@@ -2390,7 +2146,6 @@ class SettingsTab extends StatelessWidget {
   final AppThemeMode themeMode;
   final Future<void> Function(AppThemeMode mode) onThemeModeChanged;
   final Future<void> Function(bool value) onLockToggle;
-  final Future<void> Function(bool value) onPremiumToggle;
   final Future<void> Function() onOpenDifficulty;
   final VoidCallback onOpenPremium;
 
@@ -2411,7 +2166,6 @@ class SettingsTab extends StatelessWidget {
     required this.themeMode,
     required this.onThemeModeChanged,
     required this.onLockToggle,
-    required this.onPremiumToggle,
     required this.onOpenDifficulty,
     required this.onOpenPremium,
     required this.onPrivacyPolicy,
@@ -2494,13 +2248,6 @@ class SettingsTab extends StatelessWidget {
                 GlassCard(
                   child: Column(
                     children: [
-                      PremiumToggleRow(
-                        isPremium: isPremium,
-                        onChanged: onPremiumToggle,
-                      ),
-                      Divider(
-                          height: 8,
-                          color: cs.outlineVariant.withValues(alpha: 0.35)),
                       SettingsRow(
                         icon: Icons.info_outline_rounded,
                         title: "Premium details",
@@ -3498,20 +3245,26 @@ class ActionTile extends StatelessWidget {
 }
 
 class PaywallScreen extends StatelessWidget {
-  final bool isPremium;
-  final ValueChanged<bool>? onPremiumChanged;
+  final PremiumAccessService access;
 
-  const PaywallScreen({
-    super.key,
-    required this.isPremium,
-    this.onPremiumChanged,
-  });
+  const PaywallScreen({super.key, required this.access});
+
+  Future<void> _perform(
+      BuildContext context, Future<String> Function() operation) async {
+    final message = await operation();
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
 
   @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final premiumActive = isPremium;
+  Widget build(BuildContext context) => ListenableBuilder(
+        listenable: access,
+        builder: (context, _) => _build(context),
+      );
 
+  Widget _build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
         title: const Text("Premium"),
@@ -3548,7 +3301,7 @@ class PaywallScreen extends StatelessWidget {
                     const SizedBox(height: 10),
                     const _PremiumFeatureRow(
                       icon: Icons.bolt_rounded,
-                      title: "Emergency 1-minute unlock",
+                      title: "3 emergency 1-minute unlocks per day",
                     ),
                     const SizedBox(height: 10),
                     const _PremiumFeatureRow(
@@ -3576,10 +3329,11 @@ class PaywallScreen extends StatelessWidget {
               ),
               const SizedBox(height: 16),
               GlassCard(
-                child: PremiumToggleRow(
-                  isPremium: premiumActive,
-                  onChanged: onPremiumChanged,
-                ),
+                child: Text(access.isPremium
+                    ? 'Premium active'
+                    : (access.monthlyPrice == null
+                        ? 'Monthly subscription unavailable'
+                        : '${access.monthlyPrice} / month')),
               ),
               const SizedBox(height: 16),
               Text(
@@ -3591,28 +3345,26 @@ class PaywallScreen extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               FilledButton(
-                onPressed: () {
-                  onPremiumChanged?.call(true);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text("Subscription setup coming soon"),
-                    ),
-                  );
-                },
+                onPressed: access.busy ||
+                        access.isPremium ||
+                        access.monthlyPackage == null
+                    ? null
+                    : () => _perform(context, access.subscribe),
                 child: const Text("Continue / Subscribe Monthly"),
               ),
               const SizedBox(height: 8),
               OutlinedButton(
-                onPressed: () {
-                  onPremiumChanged?.call(true);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text("Purchase restored"),
-                    ),
-                  );
-                },
-                child: const Text("Restore Purchase"),
+                onPressed: access.busy
+                    ? null
+                    : () => _perform(context, access.restorePurchases),
+                child: const Text("Restore Purchases"),
               ),
+              if (access.storeMessage != null) ...[
+                Text(access.storeMessage!, textAlign: TextAlign.center),
+                TextButton(
+                    onPressed: access.busy ? null : access.loadOffering,
+                    child: const Text('Retry')),
+              ],
               TextButton(
                 onPressed: () => Navigator.maybePop(context),
                 child: const Text("Not now"),

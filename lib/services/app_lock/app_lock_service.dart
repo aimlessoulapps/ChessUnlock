@@ -24,6 +24,7 @@ class AppLockStateSnapshot {
     required this.indefiniteUnlock,
     required this.unlockUntilMs,
     this.premiumActive = false,
+    this.premiumValidUntilMs = 0,
     this.emergencyUnlockDayKey = "",
     this.emergencyUnlockCount = 0,
     this.emergencyUnlockDailyLimit = 0,
@@ -34,6 +35,7 @@ class AppLockStateSnapshot {
   final bool indefiniteUnlock;
   final int unlockUntilMs;
   final bool premiumActive;
+  final int premiumValidUntilMs;
   final String emergencyUnlockDayKey;
   final int emergencyUnlockCount;
   final int emergencyUnlockDailyLimit;
@@ -237,6 +239,7 @@ class AndroidAppLockService extends AppLockService {
         "indefiniteUnlock": snapshot.indefiniteUnlock,
         "unlockUntilMs": snapshot.unlockUntilMs,
         "premiumActive": snapshot.premiumActive,
+        "premiumValidUntilMs": snapshot.premiumValidUntilMs,
         "emergencyUnlockDayKey": snapshot.emergencyUnlockDayKey,
         "emergencyUnlockCount": snapshot.emergencyUnlockCount,
         "emergencyUnlockDailyLimit": snapshot.emergencyUnlockDailyLimit,
