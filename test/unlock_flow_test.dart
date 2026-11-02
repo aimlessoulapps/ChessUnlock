@@ -127,6 +127,65 @@ void main() {
   PuzzleTab puzzleTab(WidgetTester tester) =>
       tester.widget<PuzzleTab>(find.byType(PuzzleTab, skipOffstage: false));
 
+  for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
+    for (final size in [const Size(320, 568), const Size(430, 932)]) {
+      testWidgets(
+          '$platform all tab positions survive subscription changes at $size',
+          (tester) async {
+        const adsChannel = 'plugins.flutter.io/google_mobile_ads';
+        final adCalls = <String>[];
+        tester.binding.defaultBinaryMessenger.setMockMessageHandler(adsChannel,
+            (message) async {
+          adCalls.add(const StandardMessageCodec()
+              .readValue(ReadBuffer(message!)) as String);
+          return const StandardMethodCodec().encodeSuccessEnvelope(null);
+        });
+        addTearDown(() => tester.binding.defaultBinaryMessenger
+            .setMockMessageHandler(adsChannel, null));
+        await launch(tester, platform, premium: true);
+        tester.view.physicalSize = size;
+        await pumpFrames(tester);
+        List<Rect> positions() => [
+              for (final type in [
+                ScreenAdHeader,
+                BoardWithHintOverlay,
+                HintSkipButton
+              ])
+                for (final element
+                    in find.byType(type, skipOffstage: false).evaluate())
+                  tester.getRect(find.byElementPredicate(
+                      (candidate) => candidate == element,
+                      skipOffstage: false)),
+              for (final tab in [HomeTab, SettingsTab])
+                tester.getRect(find
+                    .descendant(
+                      of: find.byType(tab, skipOffstage: false),
+                      matching: find.byType(ListView, skipOffstage: false),
+                      skipOffstage: false,
+                    )
+                    .first),
+            ];
+        final baseline = positions();
+        expect(baseline.length, 8);
+        for (final premium in [false, true, false, true]) {
+          adCalls.clear();
+          client.emit(customer(premium: premium));
+          await pumpFrames(tester);
+          expect(positions(), baseline);
+          if (premium) {
+            expect(
+                find.byType(BannerAdSlot, skipOffstage: false), findsNothing);
+            expect(adCalls.where((call) => call == 'loadBannerAd'), isEmpty);
+          }
+          expect(tester.takeException(), isNull);
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        debugDefaultTargetPlatformOverride = null;
+      });
+    }
+  }
+
   Future<void> openWheel(WidgetTester tester) async {
     expect(puzzleTab(tester).boardController.makeMove(from: 'e2', to: 'e4'),
         isTrue);

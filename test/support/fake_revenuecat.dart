@@ -6,6 +6,7 @@ CustomerInfo customer(
     bool willRenew = true,
     DateTime? expiry,
     DateTime? requestedAt,
+    String? managementURL,
     Store store = Store.playStore,
     VerificationResult verification = VerificationResult.verified}) {
   final now = DateTime.now().toUtc().toIso8601String();
@@ -27,7 +28,8 @@ CustomerInfo customer(
       now,
       'fixture-user',
       const {},
-      (requestedAt ?? DateTime.now()).toUtc().toIso8601String());
+      (requestedAt ?? DateTime.now()).toUtc().toIso8601String(),
+      managementURL: managementURL);
 }
 
 const monthly = Package(

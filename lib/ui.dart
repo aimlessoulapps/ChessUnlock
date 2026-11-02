@@ -560,10 +560,10 @@ class ScreenAdHeader extends StatelessWidget {
                 fontWeight: FontWeight.w700,
               ),
         ),
+        const SizedBox(height: 8),
         if (adsDisabled)
-          const SizedBox(height: 18)
-        else ...[
-          const SizedBox(height: 8),
+          const SizedBox(height: 54, width: double.infinity)
+        else
           BannerAdSlot(
             key: ValueKey("banner-ad-slot-$screenName"),
             height: 54,
@@ -571,8 +571,7 @@ class ScreenAdHeader extends StatelessWidget {
             prewarm: prewarmBanner,
             screenName: screenName,
           ),
-          const SizedBox(height: 8),
-        ],
+        const SizedBox(height: 8),
       ],
     );
   }
@@ -2151,7 +2150,6 @@ class SettingsTab extends StatelessWidget {
 
   final Future<void> Function() onPrivacyPolicy;
   final Future<void> Function() onFeedback;
-  final Future<void> Function() onRateApp;
 
   const SettingsTab({
     super.key,
@@ -2170,7 +2168,6 @@ class SettingsTab extends StatelessWidget {
     required this.onOpenPremium,
     required this.onPrivacyPolicy,
     required this.onFeedback,
-    required this.onRateApp,
   });
 
   @override
@@ -2236,27 +2233,6 @@ class SettingsTab extends StatelessWidget {
                       onChanged: (v) => onLockToggle(v),
                     ),
                     onTap: () => onLockToggle(!lockEnabled),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Text("Premium",
-                    style: Theme.of(context)
-                        .textTheme
-                        .labelLarge
-                        ?.copyWith(color: cs.onSurfaceVariant)),
-                const SizedBox(height: 8),
-                GlassCard(
-                  child: Column(
-                    children: [
-                      SettingsRow(
-                        icon: Icons.info_outline_rounded,
-                        title: "Premium details",
-                        subtitle: "See all premium features",
-                        trailing: Icon(Icons.chevron_right_rounded,
-                            color: cs.onSurfaceVariant),
-                        onTap: onOpenPremium,
-                      ),
-                    ],
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -2425,17 +2401,6 @@ class SettingsTab extends StatelessWidget {
                         trailing: Icon(Icons.chevron_right_rounded,
                             color: cs.onSurfaceVariant),
                         onTap: onFeedback,
-                      ),
-                      Divider(
-                          height: 8,
-                          color: cs.outlineVariant.withValues(alpha: 0.35)),
-                      SettingsRow(
-                        icon: Icons.star_rate_rounded,
-                        title: "Rate the app",
-                        subtitle: "Leave a rating on the store",
-                        trailing: Icon(Icons.chevron_right_rounded,
-                            color: cs.onSurfaceVariant),
-                        onTap: onRateApp,
                       ),
                     ],
                   ),
@@ -3244,6 +3209,17 @@ class ActionTile extends StatelessWidget {
   }
 }
 
+Future<void> openSubscriptionManagement(
+    BuildContext context, PremiumAccessService access) async {
+  final opened = await access.manageSubscription();
+  if (!opened && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text('Could not open subscriptions. Please try again or manage '
+          'your subscription in the Play Store or App Store.'),
+    ));
+  }
+}
+
 class PaywallScreen extends StatelessWidget {
   final PremiumAccessService access;
 
@@ -3345,12 +3321,16 @@ class PaywallScreen extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               FilledButton(
-                onPressed: access.busy ||
-                        access.isPremium ||
-                        access.monthlyPackage == null
+                onPressed: access.busy
                     ? null
-                    : () => _perform(context, access.subscribe),
-                child: const Text("Continue / Subscribe Monthly"),
+                    : access.isPremium
+                        ? () => openSubscriptionManagement(context, access)
+                        : access.monthlyPackage == null
+                            ? null
+                            : () => _perform(context, access.subscribe),
+                child: Text(access.isPremium
+                    ? 'Manage Subscription'
+                    : 'Continue / Subscribe Monthly'),
               ),
               const SizedBox(height: 8),
               OutlinedButton(

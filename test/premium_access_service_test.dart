@@ -1,6 +1,7 @@
 import 'package:chessUnlock/services/premium_access_service.dart';
 import 'package:chessUnlock/services/revenuecat_client.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -18,6 +19,48 @@ void main() {
         PremiumAccessService(SharedPreferences.getInstance(), client: client);
   });
   tearDown(() => service.dispose());
+
+  for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
+    test('subscription management uses RevenueCat then $platform fallback',
+        () async {
+      debugDefaultTargetPlatformOverride = platform;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      final fallback = platform == TargetPlatform.android
+          ? 'https://play.google.com/store/account/subscriptions'
+          : 'https://apps.apple.com/account/subscriptions';
+      const managed = 'https://example.com/manage';
+      client.info =
+          customer(premium: true, willRenew: false, managementURL: managed);
+      final opened = <String>[];
+      expect(
+          await service.manageSubscription(openUrl: (uri) async {
+            opened.add(uri.toString());
+            return true;
+          }),
+          isTrue);
+      expect(opened, [managed]);
+      expect(service.isPremium, isTrue);
+      opened.clear();
+      expect(
+          await service.manageSubscription(openUrl: (uri) async {
+            opened.add(uri.toString());
+            if (uri.toString() == managed) throw Exception('launch failed');
+            return true;
+          }),
+          isTrue);
+      expect(opened, [managed, fallback]);
+      client.info = customer();
+      opened.clear();
+      expect(
+          await service.manageSubscription(openUrl: (uri) async {
+            opened.add(uri.toString());
+            return false;
+          }),
+          isFalse);
+      expect(opened, [fallback]);
+      expect(service.isPremium, isFalse);
+    });
+  }
 
   test('six options, defaults, permissions and saved duration migration',
       () async {

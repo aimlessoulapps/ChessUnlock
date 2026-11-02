@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
 import 'revenuecat_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class PremiumAccessService extends ChangeNotifier {
   PremiumAccessService(this._prefsFuture, {RevenueCatClient? client})
@@ -41,6 +42,39 @@ class PremiumAccessService extends ChangeNotifier {
   DateTime? _validUntil;
   Package? monthlyPackage;
   String? storeMessage;
+  String? _managementURL;
+
+  Future<bool> manageSubscription({
+    Future<bool> Function(Uri)? openUrl,
+  }) async {
+    await refreshPremiumStatus();
+    final fallback = switch (defaultTargetPlatform) {
+      TargetPlatform.android =>
+        Uri.parse('https://play.google.com/store/account/subscriptions'),
+      TargetPlatform.iOS =>
+        Uri.parse('https://apps.apple.com/account/subscriptions'),
+      _ => null,
+    };
+    final management = Uri.tryParse(_managementURL ?? '');
+    final urls = <Uri>{
+      if (management != null &&
+          management.scheme == 'https' &&
+          management.host.isNotEmpty)
+        management,
+      if (fallback != null) fallback,
+    };
+    for (final url in urls) {
+      try {
+        final opened = await (openUrl != null
+            ? openUrl(url)
+            : launchUrl(url, mode: LaunchMode.externalApplication));
+        if (opened) return true;
+      } catch (_) {
+        // Try the store fallback if the customer's link cannot be opened.
+      }
+    }
+    return false;
+  }
 
   bool get isPremium =>
       _isPremium &&
@@ -125,6 +159,7 @@ class PremiumAccessService extends ChangeNotifier {
 
   void _applyCustomerInfo(CustomerInfo info) {
     if (_disposed) return;
+    _managementURL = info.managementURL;
     final entitlement = info.entitlements.active[entitlementIdentifier];
     if (info.entitlements.verification == VerificationResult.failed ||
         entitlement?.verification == VerificationResult.failed) {

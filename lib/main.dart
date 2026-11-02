@@ -3488,14 +3488,6 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     }
   }
 
-  Future<void> _onRateApp() async {
-    AppAnalytics.rateAppTapped();
-    // ✅ Correct logic: until the app exists on Play, there’s nothing to open.
-    // Later (after Internal/Closed testing upload), we can wire this to Play
-    // or use the official in-app review flow.
-    _snack("Rating will be available after ChessUnlock is on Google Play.");
-  }
-
   Future<void> _onFeedback() async {
     AppAnalytics.feedbackOpened();
 
@@ -3672,7 +3664,6 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
               onOpenPremium: _openPremiumPaywall,
               onPrivacyPolicy: _onPrivacyPolicy,
               onFeedback: _onFeedback,
-              onRateApp: _onRateApp,
             ),
           ],
         ),

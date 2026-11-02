@@ -261,11 +261,6 @@ class AppAnalytics {
         parameters: _screenParameters(_settingsScreen),
       );
 
-  static void rateAppTapped() => _log(
-        "rate_app_tapped",
-        parameters: _screenParameters(_settingsScreen),
-      );
-
   static void feedbackOpened() => _log(
         "feedback_opened",
         parameters: _screenParameters(_settingsScreen),
