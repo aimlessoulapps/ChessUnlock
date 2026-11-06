@@ -73,8 +73,12 @@ class MainActivity : FlutterActivity() {
                 }
 
                 "syncWatcherState" -> {
-                    syncWatcherState(call.arguments)
-                    result.success(null)
+                    try {
+                        syncWatcherState(call.arguments)
+                        result.success(null)
+                    } catch (error: IllegalArgumentException) {
+                        result.error("unlockDurationNotAllowed", error.message, null)
+                    }
                 }
 
                 "startWatcher" -> {
@@ -172,6 +176,7 @@ class MainActivity : FlutterActivity() {
             unlockUntilMs,
             premiumActive,
             premiumValidUntilMs,
+            args["manualLockPause"] as? Boolean ?: false,
             emergencyUnlockDayKey,
             emergencyUnlockCount,
             emergencyUnlockDailyLimit

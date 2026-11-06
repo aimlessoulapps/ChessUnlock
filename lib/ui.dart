@@ -11,6 +11,8 @@ import 'package:flutter/services.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 
 import 'services/premium_access_service.dart';
+import 'services/ad_consent_service.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class ChessPuzzle {
   final String id;
@@ -238,11 +240,14 @@ class _BannerAdSlotState extends State<BannerAdSlot>
 
   bool get _hasLoadedBanner => _loaded && _bannerAd != null;
 
-  bool get _canRequestBanner => widget.active || widget.prewarm;
+  bool get _canRequestBanner =>
+      AdConsentService.instance.canRequestAds &&
+      (widget.active || widget.prewarm);
 
   @override
   void initState() {
     super.initState();
+    AdConsentService.instance.addListener(_onConsentChanged);
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -252,6 +257,17 @@ class _BannerAdSlotState extends State<BannerAdSlot>
         _ensureBannerAdLoaded(reason: "init");
       }
     });
+  }
+
+  void _onConsentChanged() {
+    if (!mounted) return;
+    if (!AdConsentService.instance.canRequestAds) {
+      _cancelRetryTimer();
+      _disposeLoadedBanner();
+      setState(() {});
+    } else {
+      _ensureBannerAdLoaded(reason: "consent_updated");
+    }
   }
 
   @override
@@ -398,7 +414,8 @@ class _BannerAdSlotState extends State<BannerAdSlot>
           if (_loadingBannerAd == ad) {
             _loadingBannerAd = null;
           }
-          if (!mounted) {
+          if (!mounted || !AdConsentService.instance.canRequestAds) {
+            _loading = false;
             ad.dispose();
             return;
           }
@@ -462,6 +479,7 @@ class _BannerAdSlotState extends State<BannerAdSlot>
 
   @override
   void dispose() {
+    AdConsentService.instance.removeListener(_onConsentChanged);
     WidgetsBinding.instance.removeObserver(this);
     _cancelRetryTimer();
     _loadingBannerAd?.dispose();
@@ -499,7 +517,7 @@ class _BannerAdSlotState extends State<BannerAdSlot>
   }
 
   void _debugBanner(String message) {
-    debugPrint("[ads][banner][${widget.screenName}] $message");
+    if (kDebugMode) debugPrint("[ads][banner][${widget.screenName}] $message");
   }
 
   void _debugBannerLoadError(String prefix, LoadAdError error) {
@@ -2149,6 +2167,7 @@ class SettingsTab extends StatelessWidget {
   final VoidCallback onOpenPremium;
 
   final Future<void> Function() onPrivacyPolicy;
+  final Future<void> Function()? onAdPrivacyChoices;
   final Future<void> Function() onFeedback;
 
   const SettingsTab({
@@ -2167,6 +2186,7 @@ class SettingsTab extends StatelessWidget {
     required this.onOpenDifficulty,
     required this.onOpenPremium,
     required this.onPrivacyPolicy,
+    this.onAdPrivacyChoices,
     required this.onFeedback,
   });
 
@@ -2394,6 +2414,19 @@ class SettingsTab extends StatelessWidget {
                       Divider(
                           height: 8,
                           color: cs.outlineVariant.withValues(alpha: 0.35)),
+                      if (onAdPrivacyChoices != null) ...[
+                        SettingsRow(
+                          icon: Icons.tune_rounded,
+                          title: "Ad privacy choices",
+                          subtitle: "Manage your consent preferences",
+                          trailing: Icon(Icons.chevron_right_rounded,
+                              color: cs.onSurfaceVariant),
+                          onTap: onAdPrivacyChoices!,
+                        ),
+                        Divider(
+                            height: 8,
+                            color: cs.outlineVariant.withValues(alpha: 0.35)),
+                      ],
                       SettingsRow(
                         icon: Icons.feedback_rounded,
                         title: "Feedback",
@@ -3313,7 +3346,8 @@ class PaywallScreen extends StatelessWidget {
               ),
               const SizedBox(height: 16),
               Text(
-                "Monthly subscription. Cancel anytime.",
+                "Monthly subscription. Renews automatically until cancelled. "
+                "Manage or cancel in your store subscription settings.",
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: cs.onSurfaceVariant,
                       fontWeight: FontWeight.w600,
@@ -3345,6 +3379,26 @@ class PaywallScreen extends StatelessWidget {
                     onPressed: access.busy ? null : access.loadOffering,
                     child: const Text('Retry')),
               ],
+              TextButton(
+                onPressed: () async {
+                  var opened = false;
+                  try {
+                    opened = await launchUrl(
+                      Uri.parse(
+                          'https://aimlessoulapps.github.io/chessunlock-legal/'),
+                      mode: LaunchMode.externalApplication,
+                    );
+                  } catch (_) {}
+                  if (!opened && context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                          content: Text(
+                              "Couldn't open Privacy Policy. Please try again.")),
+                    );
+                  }
+                },
+                child: const Text("Privacy Policy"),
+              ),
               TextButton(
                 onPressed: () => Navigator.maybePop(context),
                 child: const Text("Not now"),

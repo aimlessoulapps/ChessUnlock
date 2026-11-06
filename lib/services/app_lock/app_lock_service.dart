@@ -23,6 +23,7 @@ class AppLockStateSnapshot {
     required this.lockEnabled,
     required this.indefiniteUnlock,
     required this.unlockUntilMs,
+    this.manualLockPause = false,
     this.premiumActive = false,
     this.premiumValidUntilMs = 0,
     this.emergencyUnlockDayKey = "",
@@ -34,6 +35,8 @@ class AppLockStateSnapshot {
   final bool lockEnabled;
   final bool indefiniteUnlock;
   final int unlockUntilMs;
+  // Explicit Settings pause; separate from a puzzle break.
+  final bool manualLockPause;
   final bool premiumActive;
   final int premiumValidUntilMs;
   final String emergencyUnlockDayKey;
@@ -230,21 +233,20 @@ class AndroidAppLockService extends AppLockService {
 
   @override
   Future<void> syncLockState(AppLockStateSnapshot snapshot) async {
-    try {
-      final lockedAppIds =
-          (await sanitizeLockedAppIds(snapshot.lockedAppIds)).toList()..sort();
-      await _channel.invokeMethod("syncWatcherState", {
-        "lockedPackages": lockedAppIds,
-        "lockEnabled": snapshot.lockEnabled,
-        "indefiniteUnlock": snapshot.indefiniteUnlock,
-        "unlockUntilMs": snapshot.unlockUntilMs,
-        "premiumActive": snapshot.premiumActive,
-        "premiumValidUntilMs": snapshot.premiumValidUntilMs,
-        "emergencyUnlockDayKey": snapshot.emergencyUnlockDayKey,
-        "emergencyUnlockCount": snapshot.emergencyUnlockCount,
-        "emergencyUnlockDailyLimit": snapshot.emergencyUnlockDailyLimit,
-      });
-    } catch (_) {}
+    final lockedAppIds =
+        (await sanitizeLockedAppIds(snapshot.lockedAppIds)).toList()..sort();
+    await _channel.invokeMethod("syncWatcherState", {
+      "lockedPackages": lockedAppIds,
+      "lockEnabled": snapshot.lockEnabled,
+      "indefiniteUnlock": snapshot.indefiniteUnlock,
+      "unlockUntilMs": snapshot.unlockUntilMs,
+      "manualLockPause": snapshot.manualLockPause,
+      "premiumActive": snapshot.premiumActive,
+      "premiumValidUntilMs": snapshot.premiumValidUntilMs,
+      "emergencyUnlockDayKey": snapshot.emergencyUnlockDayKey,
+      "emergencyUnlockCount": snapshot.emergencyUnlockCount,
+      "emergencyUnlockDailyLimit": snapshot.emergencyUnlockDailyLimit,
+    });
   }
 
   @override
@@ -336,23 +338,17 @@ class AndroidAppLockService extends AppLockService {
 
   @override
   Future<void> startEnforcement() async {
-    try {
-      await _channel.invokeMethod("startWatcher");
-    } catch (_) {}
+    await _channel.invokeMethod("startWatcher");
   }
 
   @override
   Future<void> hideActiveBlocker() async {
-    try {
-      await _channel.invokeMethod("hideWatcherOverlay");
-    } catch (_) {}
+    await _channel.invokeMethod("hideWatcherOverlay");
   }
 
   @override
   Future<void> stopEnforcement() async {
-    try {
-      await _channel.invokeMethod("stopWatcher");
-    } catch (_) {}
+    await _channel.invokeMethod("stopWatcher");
   }
 }
 
@@ -495,6 +491,9 @@ class IosScreenTimeAppLockService extends AppLockService {
         "lockEnabled": snapshot.lockEnabled,
         "indefiniteUnlock": snapshot.indefiniteUnlock,
         "unlockUntilMs": snapshot.unlockUntilMs,
+        "manualLockPause": snapshot.manualLockPause,
+        "premiumActive": snapshot.premiumActive,
+        "premiumValidUntilMs": snapshot.premiumValidUntilMs,
       });
     } on PlatformException catch (error) {
       if (error.code != "authorizationRequired") rethrow;
@@ -606,7 +605,7 @@ class IosScreenTimeAppLockService extends AppLockService {
   }
 
   void _debugScreenTime(String message) {
-    debugPrint("[screen-time][dart] $message");
+    if (kDebugMode) debugPrint("[screen-time][dart] $message");
   }
 
   NativeAppSelectionResult _selectionResultFromMap(Map<String, dynamic> raw) {

@@ -17,6 +17,7 @@ class EmergencyUnlockService extends ChangeNotifier {
   final DateTime Function() _now;
   final bool useAndroidQuota;
   bool _recording = false;
+  (String, int)? _pendingUse;
   static const _channel = MethodChannel('chesslock/system');
   int get dailyLimit => _isPremium() ? 3 : 1;
   static const int unlockMinutes = 1;
@@ -68,8 +69,8 @@ class EmergencyUnlockService extends ChangeNotifier {
     if (changed) notifyListeners();
   }
 
-  Future<bool> recordUseIfAvailable() async {
-    if (_recording) return false;
+  Future<bool> recordUseIfAvailable({bool refundable = false}) async {
+    if (_recording || _pendingUse != null) return false;
     _recording = true;
     try {
       if (useAndroidQuota) {
@@ -89,12 +90,30 @@ class EmergencyUnlockService extends ChangeNotifier {
       _usedToday += 1;
       await prefs.setString(dayKeyPrefsKey, _dayKey);
       await prefs.setInt(countPrefsKey, _usedToday);
+      if (refundable) _pendingUse = (_dayKey, _usedToday);
       _debugEmergency("use recorded; day=$_dayKey used=$_usedToday");
       notifyListeners();
       return true;
     } finally {
       _recording = false;
     }
+  }
+
+  void completeUse() => _pendingUse = null;
+
+  /// Refund only this instance's uncommitted iOS reservation after the caller
+  /// has confirmed relocking. Never erase a concurrent use or a new day's quota.
+  Future<void> refundFailedUse() async {
+    final reservation = _pendingUse;
+    _pendingUse = null;
+    if (reservation == null || useAndroidQuota) return;
+    final prefs = await _prefsFuture;
+    if (_todayKey() == reservation.$1 &&
+        prefs.getString(dayKeyPrefsKey) == reservation.$1 &&
+        prefs.getInt(countPrefsKey) == reservation.$2) {
+      await prefs.setInt(countPrefsKey, reservation.$2 - 1);
+    }
+    await refreshUsage();
   }
 
   String _todayKey() {

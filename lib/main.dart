@@ -17,6 +17,7 @@ import 'services/app_lock/app_lock_service.dart';
 import 'services/analytics_service.dart';
 import 'services/crashlytics_service.dart';
 import 'services/emergency_unlock_service.dart';
+import 'services/ad_consent_service.dart';
 import 'services/lock_state_controller.dart';
 import 'services/premium_access_service.dart';
 import 'services/puzzle_queue_service.dart';
@@ -35,7 +36,7 @@ Future<void> main() async {
       await createAppLockService().consumeOpenPuzzleRequest();
   runApp(MyApp(initialTab: openPuzzleOnStart ? 1 : 0));
   WidgetsBinding.instance.addPostFrameCallback((_) {
-    unawaited(_initializeMobileAds());
+    unawaited(AdConsentService.instance.initialize());
   });
 }
 
@@ -50,34 +51,6 @@ Future<bool> _initializeFirebaseIfConfigured() async {
 
   await Firebase.initializeApp(options: options);
   return true;
-}
-
-Future<void> _initializeMobileAds() async {
-  if (kIsWeb ||
-      (defaultTargetPlatform != TargetPlatform.android &&
-          defaultTargetPlatform != TargetPlatform.iOS)) {
-    return;
-  }
-
-  try {
-    final status = await MobileAds.instance.initialize();
-    final adapters = status.adapterStatuses.entries
-        .map(
-          (entry) => "${entry.key}:"
-              "${entry.value.state.name}/"
-              "${entry.value.latency}s/"
-              "${entry.value.description}",
-        )
-        .join("; ");
-    debugPrint(
-      "[ads][init] Mobile Ads initialized; "
-      "platform=${defaultTargetPlatform.name} "
-      "adapters=${adapters.isEmpty ? "none" : adapters}",
-    );
-  } catch (error) {
-    debugPrint("[ads][init] Mobile Ads initialization failed: $error");
-    // Ads are optional; app startup should never depend on ad initialization.
-  }
 }
 
 class MyApp extends StatefulWidget {
@@ -328,6 +301,7 @@ TextTheme _safeScaleTextTheme(TextTheme t, double factor) {
 class ChessUnlockShell extends StatefulWidget {
   final int initialTab;
   final PremiumAccessService? premiumAccess;
+  final PuzzleQueueService? puzzleQueue;
   final AppThemeMode themeMode;
   final Future<void> Function(AppThemeMode mode) onThemeModeChanged;
 
@@ -336,6 +310,7 @@ class ChessUnlockShell extends StatefulWidget {
     this.initialTab = 0,
     required this.themeMode,
     this.premiumAccess,
+    this.puzzleQueue,
     required this.onThemeModeChanged,
   });
 
@@ -525,10 +500,11 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     _logScreenViewedForTab(_tab);
     _lockState = LockStateController(_prefsFuture);
     _statsRepository = StatsRepository(_prefsFuture);
-    _puzzleQueue = PuzzleQueueService(
-      _prefsFuture,
-      difficultyOptions: _difficultyOptions,
-    );
+    _puzzleQueue = widget.puzzleQueue ??
+        PuzzleQueueService(
+          _prefsFuture,
+          difficultyOptions: _difficultyOptions,
+        );
     _premiumAccess = widget.premiumAccess ?? PremiumAccessService(_prefsFuture);
     _emergencyUnlock = EmergencyUnlockService(
       _prefsFuture,
@@ -537,6 +513,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
           !kIsWeb && defaultTargetPlatform == TargetPlatform.android,
     );
     _appLock = createAppLockService();
+    AdConsentService.instance.addListener(_onAdConsentChanged);
     _premiumAccess.addListener(_onPremiumStateChanged);
     _emergencyUnlock.addListener(_onEmergencyUnlockStateChanged);
     WidgetsBinding.instance.addObserver(this);
@@ -581,7 +558,11 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       );
       if (mounted) _snack("Puzzle load failed.");
     });
-    await _ensureAppLockReadyIfNeeded();
+    try {
+      await _ensureAppLockReadyIfNeeded();
+    } catch (_) {
+      _snack("Couldn't start app blocking. Check permissions and try again.");
+    }
     await _openPuzzleFromOverlayRequestIfNeeded();
     await _maybeShowFirstLaunchOnboarding();
 
@@ -662,6 +643,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     _cancelBannerPrewarmTimers();
     _disposeRewardedAd();
     _cancelRewardedRetryTimer();
+    AdConsentService.instance.removeListener(_onAdConsentChanged);
     _premiumAccess.removeListener(_onPremiumStateChanged);
     _emergencyUnlock.removeListener(_onEmergencyUnlockStateChanged);
     _premiumAccess.dispose();
@@ -678,9 +660,14 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
         _queueExpirySync();
       }
       unawaited(
-        _refreshPremiumAndEmergencyState().then(
+        _refreshPremiumAndEmergencyState()
+            .then(
           (_) => _ensureAppLockReadyIfNeeded(),
-        ),
+        )
+            .catchError((Object _, StackTrace __) {
+          _snack(
+              "Couldn't update app blocking. Check permissions and try again.");
+        }),
       );
       unawaited(_openPuzzleFromOverlayRequestIfNeeded());
       _scheduleLaunchableAppsPrefetch(reason: "app_resumed");
@@ -711,7 +698,9 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
   Future<void> _refreshPremiumAndEmergencyState() async {
     await _premiumAccess.refreshPremiumStatus();
+    if (!mounted) return;
     _premiumStatusReady = true;
+    await _premiumAccess.loadUnlockMinutes();
     _clampDifficultyForFreeUsers();
     await _emergencyUnlock.refreshUsage();
     if (mounted) setState(() {});
@@ -726,12 +715,13 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     if (_lastPremiumState == _isPremium) {
       if (_lastPremiumValidUntilMs != validUntil) {
         _lastPremiumValidUntilMs = validUntil;
-        unawaited(_ensureAppLockReadyIfNeeded());
+        _queueAppLockReconciliation();
       }
       return;
     }
     _lastPremiumValidUntilMs = validUntil;
     _lastPremiumState = _isPremium;
+    unawaited(_premiumAccess.loadUnlockMinutes());
     _resetPremiumPuzzleActionState(notify: false);
     _clampDifficultyForFreeUsers();
     if (_isPremium) {
@@ -740,13 +730,32 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       _preloadRewardedAd();
     }
     setState(() {});
-    unawaited(_ensureAppLockReadyIfNeeded());
+    _queueAppLockReconciliation();
+  }
+
+  void _onAdConsentChanged() {
+    if (!mounted) return;
+    if (AdConsentService.instance.canRequestAds &&
+        _premiumStatusReady &&
+        !_isPremium) {
+      _preloadRewardedAd();
+    } else {
+      _disposeRewardedAd();
+      _cancelRewardedRetryTimer();
+    }
+    setState(() {});
+  }
+
+  Future<void> _onAdPrivacyChoices() async {
+    if (!await AdConsentService.instance.showPrivacyOptions()) {
+      _snack("Couldn't open ad privacy choices. Please try again.");
+    }
   }
 
   void _onEmergencyUnlockStateChanged() {
     if (!mounted) return;
     setState(() {});
-    unawaited(_ensureAppLockReadyIfNeeded());
+    _queueAppLockReconciliation();
   }
 
   Future<void> _openPuzzleFromOverlayRequestIfNeeded() async {
@@ -953,7 +962,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   }
 
   void _debugUnlock(String message) {
-    debugPrint("[unlock] $message");
+    if (kDebugMode) debugPrint("[unlock] $message");
   }
 
   bool get _isBlackToMove => _isBlackToMoveFromFen(_positionFen);
@@ -1302,9 +1311,12 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   // =========================
   // Get next puzzle (queue -> cached -> network)
   // =========================
+  int _puzzleLoadGeneration = 0;
+
   Future<void> _showNextPuzzleForCurrentDifficulty(
       {required String reason}) async {
     if (!mounted) return;
+    final generation = ++_puzzleLoadGeneration;
     final diff = _effectiveDifficulty;
     final isExtraPuzzle = _extraPuzzleMode || reason == "extra";
     final hadPuzzleAlready = _puzzle != null;
@@ -1315,8 +1327,17 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       _loadError = null;
     });
 
-    final next = await _puzzleQueue.nextPuzzle(diff);
-    if (!mounted) return;
+    ChessPuzzle? next;
+    try {
+      next = await _puzzleQueue.nextPuzzle(diff);
+    } catch (_) {
+      // Follow the normal retry UI path, including clearing the loading state.
+    }
+    if (!mounted || generation != _puzzleLoadGeneration) return;
+    if (diff != _effectiveDifficulty) {
+      await _showNextPuzzleForCurrentDifficulty(reason: "difficulty_changed");
+      return;
+    }
 
     if (next != null) {
       _loadPuzzle(next, isNewPuzzle: true);
@@ -1346,7 +1367,8 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
     setState(() {
       _loadingPuzzle = false;
-      _loadError = "Puzzle load failed: HTTP 500 / network error";
+      _loadError =
+          "Could not load a puzzle. Check your connection and try again.";
 
       if (!hadPuzzleAlready) {
         _puzzle = null;
@@ -1371,6 +1393,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
         lockEnabled: _lockEnabled,
         indefiniteUnlock: _indefiniteUnlock,
         unlockUntilMs: _unlockedUntil?.millisecondsSinceEpoch ?? 0,
+        manualLockPause: _manualLockPause,
         premiumActive: _isPremium,
         premiumValidUntilMs: _premiumAccess.premiumValidUntilMs,
         emergencyUnlockDayKey: _emergencyUnlock.dayKey,
@@ -1380,13 +1403,38 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     );
   }
 
-  Future<void> _ensureAppLockReadyIfNeeded() async {
+  void _queueAppLockReconciliation() {
+    unawaited(
+        _ensureAppLockReadyIfNeeded().catchError((Object _, StackTrace __) {
+      _snack("Couldn't update app blocking. Check permissions and try again.");
+    }));
+  }
+
+  int _lockStateRevision = 0;
+  Future<void> _nativeLockTail = Future<void>.value();
+
+  Future<void> _serializeNativeLock(Future<void> Function() operation) {
+    final next = _nativeLockTail.then((_) async {
+      if (mounted) await operation();
+    });
+    _nativeLockTail = next.catchError((Object _, StackTrace __) {});
+    return next;
+  }
+
+  Future<void> _ensureAppLockReadyIfNeeded() =>
+      _serializeNativeLock(_reconcileAppLockState);
+
+  Future<void> _reconcileAppLockState() async {
+    final revision = _lockStateRevision;
+    bool isCurrent() => mounted && revision == _lockStateRevision;
     await _syncAppLockStateToNative();
+    if (!isCurrent()) return;
 
     final selectionSummary = await _refreshAppLockSelectionSummary();
     final hasConfiguredLocks = selectionSummary?.hasSelection ??
         await _appLock.hasConfiguredLocks(_lockedPackages);
 
+    if (!isCurrent()) return;
     if (!hasConfiguredLocks) {
       await _appLock.stopEnforcement();
       return;
@@ -1404,7 +1452,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     final permissionStatus = await _appLock.checkPermissions(
       requiresOverlay: _lockEnabled,
     );
-    if (!mounted) return;
+    if (!isCurrent()) return;
 
     if (permissionStatus.issue == AppLockPermissionIssue.usageAccessRequired) {
       await showDialog<void>(
@@ -1431,7 +1479,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
           ],
         ),
       );
-      await _appLock.stopEnforcement();
+      if (isCurrent()) await _appLock.stopEnforcement();
       return;
     }
 
@@ -1461,14 +1509,14 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
           ],
         ),
       );
-      await _appLock.stopEnforcement();
+      if (isCurrent()) await _appLock.stopEnforcement();
       return;
     }
 
     if (permissionStatus.issue ==
         AppLockPermissionIssue.screenTimeAuthorizationRequired) {
       _snack("Screen Time permission is required.");
-      await _appLock.stopEnforcement();
+      if (isCurrent()) await _appLock.stopEnforcement();
       return;
     }
 
@@ -1484,7 +1532,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
     if (shouldRunWatcher) {
       await _appLock.requestNotificationPermissionIfNeeded();
-      if (!mounted) return;
+      if (!isCurrent()) return;
 
       if (_lockEnabled) {
         await _appLock.startEnforcement();
@@ -1492,7 +1540,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
         if (!_appLock.usesNativeAppPicker) {
           await _appLock.startEnforcement();
         }
-        await _appLock.hideActiveBlocker();
+        if (isCurrent()) await _appLock.hideActiveBlocker();
       }
     } else {
       await _appLock.stopEnforcement();
@@ -1583,6 +1631,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   Future<void> _syncExpiry() async {
     if (_indefiniteUnlock) {
       if (_lockEnabled) {
+        _lockStateRevision++;
         _lockEnabled = false;
         if (mounted) setState(() {});
         await _syncLockStateToStorageAndWatcher(includeUnlockState: false);
@@ -1606,6 +1655,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
     final shouldBeLockOn = !_isUnlocked;
     if (_lockEnabled != shouldBeLockOn) {
+      _lockStateRevision++;
       _lockEnabled = shouldBeLockOn;
       if (mounted) setState(() {});
       await _syncLockStateToStorageAndWatcher(includeUnlockState: false);
@@ -1613,6 +1663,8 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   }
 
   Future<bool> _relockNow({required bool resetPuzzle}) async {
+    final revision = ++_lockStateRevision;
+    _manualLockPause = false;
     _indefiniteUnlock = false;
     _unlockedUntil = null;
     _lockEnabled = true;
@@ -1622,9 +1674,13 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     final saved =
         await _syncLockStateToStorageAndWatcher(includeUnlockState: true);
 
+    if (revision != _lockStateRevision) return false;
     if (saved) {
       try {
-        await _appLock.relockNow();
+        await _serializeNativeLock(() async {
+          if (revision == _lockStateRevision) await _appLock.relockNow();
+        });
+        if (revision != _lockStateRevision) return false;
         _debugUnlock("relock/apply shield completed from relockNow");
       } catch (error) {
         _debugUnlock(
@@ -1641,22 +1697,46 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     return saved;
   }
 
+  bool _unlockInFlight = false;
+  bool _manualLockPause = false;
+
   Future<bool> _unlockForMinutes(int? minutes, {bool emergency = false}) async {
+    if (_unlockInFlight) return false;
+    _unlockInFlight = true;
+    try {
+      return await _performUnlockForMinutes(minutes, emergency: emergency);
+    } finally {
+      _emergencyUnlock.completeUse();
+      _unlockInFlight = false;
+    }
+  }
+
+  Future<bool> _performUnlockForMinutes(int? minutes,
+      {required bool emergency}) async {
     await _premiumAccess.refreshPremiumStatus();
+    if (!mounted) return false;
     if (minutes != null &&
         !(emergency
             ? minutes == EmergencyUnlockService.unlockMinutes
             : _premiumAccess.canUnlockForMinutes(minutes))) {
-      _snack("This unlock duration isn't available.");
+      if (!emergency &&
+          PremiumAccessService.unlockMinuteOptions.contains(minutes)) {
+        await _openPremiumPaywall();
+      } else {
+        _snack("This unlock duration isn't available.");
+      }
       return false;
     }
     if (emergency) {
-      await _syncLockStateToStorageAndWatcher(includeUnlockState: false);
-      if (!await _emergencyUnlock.recordUseIfAvailable()) {
+      if (!await _syncLockStateToStorageAndWatcher(includeUnlockState: false))
+        return false;
+      if (!await _emergencyUnlock.recordUseIfAvailable(refundable: true)) {
         _snack("Emergency unlock limit reached for today.");
         return false;
       }
     }
+    final revision = ++_lockStateRevision;
+    _manualLockPause = minutes == null;
     if (minutes == null) {
       _indefiniteUnlock = true;
       _unlockedUntil = null;
@@ -1677,18 +1757,32 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
     try {
       if (!saved) throw StateError("Couldn't save unlock state");
-      await _appLock.unlockFor(
-        minutes == null ? null : Duration(minutes: minutes),
-        unlockUntilMs: _unlockedUntil?.millisecondsSinceEpoch,
-      );
+      await _serializeNativeLock(() async {
+        if (revision != _lockStateRevision)
+          throw StateError("Unlock superseded");
+        await _appLock.unlockFor(
+          minutes == null ? null : Duration(minutes: minutes),
+          unlockUntilMs: _unlockedUntil?.millisecondsSinceEpoch,
+        );
+      });
+      if (revision != _lockStateRevision) return false;
       if (minutes != null && !emergency) {
         await _premiumAccess.saveUnlockMinutes(minutes);
       }
     } catch (_) {
-      await _relockNow(resetPuzzle: false);
+      if (revision == _lockStateRevision) {
+        try {
+          final relocked = await _relockNow(resetPuzzle: false);
+          if (emergency && relocked) await _emergencyUnlock.refundFailedUse();
+        } catch (_) {
+          _snack("Couldn't restore app blocking. Check permissions.");
+        }
+      }
+      _emergencyUnlock.completeUse();
       _snack("Couldn't start unlock. Please try again.");
       return false;
     }
+    _emergencyUnlock.completeUse();
 
     _resetSolvedUnlockFlow();
     _queuePuzzleRefresh("unlock");
@@ -1697,25 +1791,43 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   }
 
   Future<bool> _unlockFor24h() async {
-    _indefiniteUnlock = false;
-    _unlockedUntil = DateTime.now().add(const Duration(hours: 24));
-    _lockEnabled = false;
-    _resetSolvedUnlockFlow();
-    if (mounted) setState(() {});
+    if (_unlockInFlight) return false;
+    _unlockInFlight = true;
+    final revision = ++_lockStateRevision;
+    try {
+      _manualLockPause = true;
+      _indefiniteUnlock = false;
+      _unlockedUntil = DateTime.now().add(const Duration(hours: 24));
+      _lockEnabled = false;
+      if (mounted) setState(() {});
 
-    final saved =
-        await _syncLockStateToStorageAndWatcher(includeUnlockState: true);
-
-    if (saved) {
-      await _appLock.unlockFor(
-        const Duration(hours: 24),
-        unlockUntilMs: _unlockedUntil?.millisecondsSinceEpoch,
-      );
+      if (!await _syncLockStateToStorageAndWatcher(includeUnlockState: true)) {
+        throw StateError("Couldn't save unlock state");
+      }
+      await _serializeNativeLock(() async {
+        if (revision != _lockStateRevision)
+          throw StateError("Unlock superseded");
+        await _appLock.unlockFor(const Duration(hours: 24),
+            unlockUntilMs: _unlockedUntil?.millisecondsSinceEpoch);
+      });
+      if (revision != _lockStateRevision) return false;
+      _resetSolvedUnlockFlow();
+      _queuePuzzleRefresh("unlock24h");
+      if (mounted) setState(() {});
+      return true;
+    } catch (_) {
+      if (revision == _lockStateRevision) {
+        try {
+          await _relockNow(resetPuzzle: false);
+        } catch (_) {
+          _snack("Couldn't restore app blocking. Check permissions.");
+        }
+      }
+      _snack("Couldn't pause locking. Please try again.");
+      return false;
+    } finally {
+      _unlockInFlight = false;
     }
-
-    _queuePuzzleRefresh("unlock24h");
-    if (mounted) setState(() {});
-    return saved;
   }
 
   // =========================
@@ -2521,6 +2633,9 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     required String reason,
     bool ignoreRetryDelay = false,
   }) {
+    if (!_premiumStatusReady || !AdConsentService.instance.canRequestAds) {
+      return Future.value(null);
+    }
     if (_isPremium) {
       _debugRewarded("rewarded load skipped; premium mode active");
       return Future.value(null);
@@ -2587,7 +2702,9 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       request: const AdRequest(),
       rewardedAdLoadCallback: RewardedAdLoadCallback(
         onAdLoaded: (ad) {
-          if (!mounted) {
+          if (!mounted ||
+              _isPremium ||
+              !AdConsentService.instance.canRequestAds) {
             _rewardedAdLoadFuture = null;
             ad.dispose();
             if (!completer.isCompleted) completer.complete(null);
@@ -2663,9 +2780,10 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     required _RewardedPuzzleAction action,
     required VoidCallback onRewardEarned,
   }) async {
-    if (_isPremium) return _RewardedAdResult.unavailable;
+    if (_isPremium || !AdConsentService.instance.canRequestAds)
+      return _RewardedAdResult.unavailable;
     final ad = _rewardedAd ?? await _loadRewardedAd(reason: "show");
-    if (_isPremium) {
+    if (_isPremium || !AdConsentService.instance.canRequestAds) {
       ad?.dispose();
       _rewardedAd = null;
       return _RewardedAdResult.unavailable;
@@ -2853,7 +2971,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   }
 
   void _debugRewarded(String message) {
-    debugPrint("[ads][rewarded] $message");
+    if (kDebugMode) debugPrint("[ads][rewarded] $message");
   }
 
   void _debugRewardedLoadError(String prefix, LoadAdError error) {
@@ -2971,7 +3089,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
         'to': to,
         if (promo != null) 'promotion': promo,
       });
-      return result != null;
+      return result == true;
     } catch (_) {
       return false;
     }
@@ -3663,6 +3781,10 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
               onOpenDifficulty: _openDifficultyPicker,
               onOpenPremium: _openPremiumPaywall,
               onPrivacyPolicy: _onPrivacyPolicy,
+              onAdPrivacyChoices:
+                  AdConsentService.instance.privacyOptionsRequired
+                      ? _onAdPrivacyChoices
+                      : null,
               onFeedback: _onFeedback,
             ),
           ],

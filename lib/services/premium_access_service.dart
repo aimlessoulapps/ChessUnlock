@@ -13,7 +13,7 @@ class PremiumAccessService extends ChangeNotifier {
 
   final Future<SharedPreferences> _prefsFuture;
 
-  static const freeUnlockMinutes = 60;
+  static const freeUnlockMinutes = 45;
   static const premiumUnlockMinutes = 180;
   static const defaultUnlockMinutes = 15;
   static const unlockDurationPrefsKey = "unlockDurationMinutes";
@@ -103,11 +103,11 @@ class PremiumAccessService extends ChangeNotifier {
   }
 
   Future<void> saveUnlockMinutes(int minutes) async {
+    final prefs = await _prefsFuture;
     if (!canUnlockForMinutes(minutes)) {
       throw ArgumentError.value(
           minutes, "minutes", "Unlock duration not allowed");
     }
-    final prefs = await _prefsFuture;
     await prefs.setInt(unlockDurationPrefsKey, minutes);
   }
 

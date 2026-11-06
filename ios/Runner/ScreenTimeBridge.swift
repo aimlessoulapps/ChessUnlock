@@ -301,6 +301,21 @@ final class ScreenTimeBridge: NSObject {
       let indefiniteUnlock = payload["indefiniteUnlock"] as? Bool ?? false
       let unlockUntilMs = int64Value(from: payload["unlockUntilMs"]) ?? 0
 
+      let premiumActive = payload["premiumActive"] as? Bool ?? false
+      let premiumUntil = int64Value(from: payload["premiumValidUntilMs"]) ?? 0
+      let premiumValid = premiumActive && premiumUntil > currentTimeMs()
+      let manualLockPause = payload["manualLockPause"] as? Bool ?? false
+      guard lockEnabled || manualLockPause || permitsUnlock(indefinite: indefiniteUnlock, untilMs: unlockUntilMs,
+                                          premiumValid: premiumValid) else {
+        result(operationPayload(success: false, action: "syncLockState",
+                                code: "unlockDurationNotAllowed",
+                                errorMessage: "Free unlocks cannot exceed 45 minutes."))
+        return
+      }
+      sharedDefaults.set(manualLockPause, forKey: "ios.screenTime.manualLockPause.v1")
+      sharedDefaults.set(premiumActive, forKey: "ios.screenTime.premiumActive.v1")
+      sharedDefaults.set(premiumUntil, forKey: "ios.screenTime.premiumUntilMs.v1")
+
       saveRuntimeState(
         lockEnabled: lockEnabled,
         indefiniteUnlock: indefiniteUnlock,
@@ -407,6 +422,22 @@ final class ScreenTimeBridge: NSObject {
       let indefiniteUnlock = payload["indefinite"] as? Bool ?? false
       let requestedDurationMs = int64Value(from: payload["durationMs"]) ?? 0
       let unlockUntilMs = int64Value(from: payload["unlockUntilMs"]) ?? 0
+      let premiumValid = sharedDefaults.bool(forKey: "ios.screenTime.premiumActive.v1") &&
+        Int64(sharedDefaults.integer(forKey: "ios.screenTime.premiumUntilMs.v1")) > currentTimeMs()
+      guard sharedDefaults.bool(forKey: "ios.screenTime.manualLockPause.v1") ||
+            permitsUnlock(indefinite: indefiniteUnlock, untilMs: unlockUntilMs,
+                          premiumValid: premiumValid) else {
+        result(operationPayload(success: false, action: "unlockFor",
+                                code: "unlockDurationNotAllowed",
+                                errorMessage: "Free unlocks cannot exceed 45 minutes."))
+        return
+      }
+      guard indefiniteUnlock || unlockUntilMs > currentTimeMs() else {
+        saveRuntimeState(lockEnabled: true, indefiniteUnlock: false, unlockUntilMs: 0)
+        stopRelockMonitoring()
+        result(applySelectionShields(action: "unlockForExpired"))
+        return
+      }
       saveRuntimeState(
         lockEnabled: false,
         indefiniteUnlock: indefiniteUnlock,
@@ -489,7 +520,9 @@ final class ScreenTimeBridge: NSObject {
   }
 
   private func debugLog(_ message: String) {
+    #if DEBUG
     print("[screen-time][ios] \(message)")
+    #endif
   }
 }
 
@@ -588,6 +621,18 @@ private extension ScreenTimeBridge {
     UserDefaults.standard.set(lockEnabled, forKey: lockEnabledStoreKey)
     UserDefaults.standard.set(indefiniteUnlock, forKey: indefiniteUnlockStoreKey)
     UserDefaults.standard.set(unlockUntilMs, forKey: unlockUntilStoreKey)
+  }
+
+  // Preserve absolute deadlines on sync/resume, including legacy and paid
+  // unlocks. Only a new grant is subject to the current entitlement.
+  func permitsUnlock(indefinite: Bool, untilMs: Int64, premiumValid: Bool) -> Bool {
+    if premiumValid { return true }
+    let wasIndefinite = sharedDefaults.bool(forKey: indefiniteUnlockStoreKey)
+    if indefinite { return wasIndefinite }
+    let now = currentTimeMs()
+    let existing = Int64(sharedDefaults.integer(forKey: unlockUntilStoreKey))
+    if !wasIndefinite && existing > now && untilMs == existing { return true }
+    return untilMs <= now + 45 * 60_000
   }
 
   func currentTimeMs() -> Int64 {

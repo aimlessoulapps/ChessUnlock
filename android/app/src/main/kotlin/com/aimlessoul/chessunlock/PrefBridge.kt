@@ -69,10 +69,24 @@ object PrefBridge {
         unlockUntilMs: Long,
         premiumActive: Boolean,
         premiumValidUntilMs: Long,
+        manualLockPause: Boolean,
         emergencyUnlockDayKey: String,
         emergencyUnlockCount: Int,
         emergencyUnlockDailyLimit: Int
     ) {
+        // Reconciliation may retain an existing deadline (including a paid or
+        // legacy break), but cannot create a new over-limit Free unlock.
+        val now = System.currentTimeMillis()
+        val premiumValid = premiumActive && premiumValidUntilMs > now
+        val existingUntil = getUnlockUntilMs(ctx)
+        val preservingTimedUnlock = !getIndefUnlock(ctx) &&
+            existingUntil > now && unlockUntilMs == existingUntil
+        val preservingIndefiniteUnlock = getIndefUnlock(ctx) && indefUnlock
+        require(lockEnabled || premiumValid || manualLockPause ||
+            (indefUnlock && preservingIndefiniteUnlock) ||
+            (!indefUnlock && (preservingTimedUnlock || unlockUntilMs <= now + 45 * 60_000L))) {
+            "Free unlocks cannot exceed 45 minutes"
+        }
         val sanitizedLockedPackages = sanitizeLockedPackages(ctx, lockedPackages)
         watcherPrefs(ctx).edit()
             .putBoolean(K_PREMIUM_ACTIVE, premiumActive)

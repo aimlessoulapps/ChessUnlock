@@ -111,6 +111,8 @@ final class DeviceActivityMonitorExtension: DeviceActivityMonitor {
   }
 
   private func debugLog(_ message: String) {
+    #if DEBUG
     print("[screen-time][monitor] \(message)")
+    #endif
   }
 }

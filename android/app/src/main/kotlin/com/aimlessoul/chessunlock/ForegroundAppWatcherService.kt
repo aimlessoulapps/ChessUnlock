@@ -29,8 +29,6 @@ class ForegroundAppWatcherService : Service() {
         private const val NOTIF_ID = 14001
 
         private const val ACTION_HIDE_OVERLAY = "chesslock.action.HIDE_OVERLAY"
-        private const val USAGE_EVENT_LOOKBACK_MS = 10_000L
-        private const val USAGE_EVENT_OVERLAP_MS = 1000L
         private const val FOREGROUND_POLL_ACTIVE_MS = 800L
         private const val OVERLAY_CONFIRM_DELAY_MS = 100L
         private const val SELF_OPEN_SUPPRESS_MS = 1800L
@@ -70,8 +68,7 @@ class ForegroundAppWatcherService : Service() {
     private var overlayBlockedPkg: String? = null
     private lateinit var wm: WindowManager
 
-    private var lastPkg: String? = null
-    private var lastUsageEventQueryMs: Long = 0L
+    private val foregroundState = ForegroundAppState()
     private var pendingBlockedPkg: String? = null
     private var pendingBlockedSinceMs: Long = 0L
     private var suppressOverlayUntilMs: Long = 0L
@@ -172,7 +169,7 @@ class ForegroundAppWatcherService : Service() {
         if (intent?.action == ACTION_HIDE_OVERLAY) {
             clearPendingBlockedPackage()
             suppressOverlayUntilMs = System.currentTimeMillis() + SELF_OPEN_SUPPRESS_MS
-            lastPkg = packageName
+            foregroundState.resumed(packageName)
             hideOverlay()
         }
         return START_STICKY
@@ -224,42 +221,28 @@ class ForegroundAppWatcherService : Service() {
     }
 
     private fun getForegroundPackage(): String? {
+        val keyguard = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+        if (keyguard.isKeyguardLocked) return null
         val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val end = System.currentTimeMillis()
-        val begin = if (lastUsageEventQueryMs > 0L) {
-            (lastUsageEventQueryMs - USAGE_EVENT_OVERLAP_MS)
-                .coerceAtLeast(end - USAGE_EVENT_LOOKBACK_MS)
-        } else {
-            end - USAGE_EVENT_LOOKBACK_MS
-        }
-
+        val begin = foregroundState.queryStartMs(end)
         try {
             val events = usm.queryEvents(begin, end)
             val event = UsageEvents.Event()
-            var sawTransitionEvent = false
             while (events.hasNextEvent()) {
                 events.getNextEvent(event)
                 when (event.eventType) {
-                    UsageEvents.Event.ACTIVITY_RESUMED,
-                    UsageEvents.Event.MOVE_TO_FOREGROUND -> {
-                        sawTransitionEvent = true
-                        lastPkg = event.packageName
-                    }
-                    UsageEvents.Event.ACTIVITY_PAUSED,
-                    UsageEvents.Event.MOVE_TO_BACKGROUND -> {
-                        sawTransitionEvent = true
-                        if (event.packageName == lastPkg) {
-                            lastPkg = null
-                        }
-                    }
+                    UsageEvents.Event.MOVE_TO_FOREGROUND -> foregroundState.resumed(event.packageName)
+                    UsageEvents.Event.MOVE_TO_BACKGROUND -> foregroundState.paused(event.packageName)
+                    UsageEvents.Event.SCREEN_NON_INTERACTIVE,
+                    UsageEvents.Event.KEYGUARD_SHOWN -> foregroundState.screenHidden()
                 }
             }
-            lastUsageEventQueryMs = end
-            if (lastPkg != null) return lastPkg
-            if (sawTransitionEvent) return null
-        } catch (_: Throwable) {}
-
-        return lastPkg
+            foregroundState.queryCompleted(end)
+        } catch (_: Throwable) {
+            // Keep the last successful state; retry the same window next poll.
+        }
+        return foregroundState.packageName
     }
 
     private fun showOverlay(blockedPkg: String) {
@@ -335,7 +318,7 @@ class ForegroundAppWatcherService : Service() {
             AnalyticsLogger.overlayOpenChessUnlockClicked(this)
             clearPendingBlockedPackage()
             suppressOverlayUntilMs = System.currentTimeMillis() + SELF_OPEN_SUPPRESS_MS
-            lastPkg = packageName
+            foregroundState.resumed(packageName)
             hideOverlay()
             PrefBridge.requestOpenPuzzle(this)
             val i = Intent(this, MainActivity::class.java)

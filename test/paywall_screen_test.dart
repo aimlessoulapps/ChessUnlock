@@ -1,6 +1,7 @@
 import 'package:chessUnlock/services/premium_access_service.dart';
 import 'package:chessUnlock/ui.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'support/fake_revenuecat.dart';
@@ -19,6 +20,31 @@ class _RecordingPremiumAccess extends PremiumAccessService {
 }
 
 void main() {
+  testWidgets('paywall exposes privacy policy and handles launch failure',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final access = _RecordingPremiumAccess(FakeRevenueCatClient());
+    final urls = <String>[];
+    const channel = MethodChannel('plugins.flutter.io/url_launcher');
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel,
+        (call) async {
+      if (call.method == 'launch') urls.add(call.arguments['url'] as String);
+      return false;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null));
+    await tester.pumpWidget(MaterialApp(home: PaywallScreen(access: access)));
+    expect(find.textContaining('Renews automatically'), findsOneWidget);
+    await tester.ensureVisible(find.text('Privacy Policy'));
+    await tester.tap(find.text('Privacy Policy'));
+    await tester.pumpAndSettle();
+    expect(urls, ['https://aimlessoulapps.github.io/chessunlock-legal/']);
+    expect(find.text("Couldn't open Privacy Policy. Please try again."),
+        findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+    access.dispose();
+  });
+
   testWidgets(
       'paywall preserves benefits, shows store price and purchases/restores',
       (tester) async {

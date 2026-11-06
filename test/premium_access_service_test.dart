@@ -73,11 +73,22 @@ void main() {
         PremiumAccessService.unlockMinuteOptions, [15, 30, 45, 60, 120, 180]);
     expect(await service.loadUnlockMinutes(), 15);
     for (final minutes in PremiumAccessService.unlockMinuteOptions) {
-      expect(service.canUnlockForMinutes(minutes), minutes <= 60);
+      expect(service.canUnlockForMinutes(minutes), minutes <= 45);
     }
-    await expectLater(service.saveUnlockMinutes(120), throwsArgumentError);
-    for (final entry
-        in {0: 15, 29: 15, 59: 45, 75: 60, 105: 60, 165: 60, 999: 60}.entries) {
+    for (final minutes in [60, 120, 180]) {
+      await expectLater(
+          service.saveUnlockMinutes(minutes), throwsArgumentError);
+    }
+    for (final entry in {
+      0: 15,
+      29: 15,
+      59: 45,
+      60: 45,
+      75: 45,
+      105: 45,
+      165: 45,
+      999: 45
+    }.entries) {
       await prefs.setInt(
           PremiumAccessService.unlockDurationPrefsKey, entry.key);
       expect(await service.loadUnlockMinutes(), entry.value);
@@ -96,6 +107,27 @@ void main() {
     expect(PremiumAccessService.formatUnlockMinutes(60), '1 hr');
     expect(PremiumAccessService.formatUnlockMinutes(120), '2 hrs');
     expect(PremiumAccessService.formatUnlockMinutes(180), '3 hrs');
+  });
+
+  test('downgrade migrates selection without changing an active deadline',
+      () async {
+    client.info = customer(premium: true);
+    await service.refreshPremiumStatus();
+    await service.saveUnlockMinutes(180);
+    final prefs = await SharedPreferences.getInstance();
+    final deadline =
+        DateTime.now().add(const Duration(hours: 3)).millisecondsSinceEpoch;
+    await prefs.setInt('unlockUntilMs', deadline);
+    client.emit(customer());
+    expect(await service.loadUnlockMinutes(), 45);
+    expect(prefs.getInt(PremiumAccessService.unlockDurationPrefsKey), 45);
+    expect(prefs.getInt('unlockUntilMs'), deadline);
+    for (final minutes in [60, 120, 180]) {
+      expect(service.canUnlockForMinutes(minutes), isFalse);
+    }
+    client.emit(customer(premium: true));
+    await service.saveUnlockMinutes(60);
+    expect(await service.loadUnlockMinutes(), 60);
   });
 
   test('single configuration, real package price, purchase and restore',

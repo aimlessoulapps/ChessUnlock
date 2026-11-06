@@ -187,7 +187,7 @@ class PuzzleQueueService {
           ? solRaw.map((e) => e.toString()).toList()
           : <String>[];
 
-      if (solution.isEmpty) return null;
+      if (!_validSolution(fen, solution)) return null;
 
       return ChessPuzzle(
         id: id,
@@ -198,6 +198,17 @@ class PuzzleQueueService {
       );
     } catch (_) {
       return null;
+    }
+  }
+
+  bool _validSolution(String fen, List<String> solution) {
+    if (solution.isEmpty) return false;
+    final game = ch.Chess();
+    try {
+      if (!game.load(fen)) return false;
+      return solution.every((move) => _applyUci(game, move));
+    } catch (_) {
+      return false;
     }
   }
 
@@ -300,6 +311,10 @@ class PuzzleQueueService {
     final startFen =
         _isUciLegalFromFen(fenPlusOne, solution.first) ? fenPlusOne : fenExact;
 
+    if (!_validSolution(startFen, solution)) {
+      throw const FormatException("Invalid puzzle solution");
+    }
+
     return ChessPuzzle(
       id: id,
       rating: rating,
@@ -362,7 +377,7 @@ class PuzzleQueueService {
   bool _safeMoveSan(ch.Chess game, String san) {
     try {
       final dynamic result = game.move(san);
-      return result != null;
+      return result == true;
     } catch (_) {
       return false;
     }
@@ -408,7 +423,7 @@ class PuzzleQueueService {
         'to': to,
         if (promo != null) 'promotion': promo,
       });
-      return result != null;
+      return result == true;
     } catch (_) {
       return false;
     }

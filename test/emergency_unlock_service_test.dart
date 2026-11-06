@@ -44,4 +44,39 @@ void main() {
         [restarted.recordUseIfAvailable(), restarted.recordUseIfAvailable()]);
     expect(results.where((value) => value).length, 1);
   });
+  test(
+      'failed iOS reservation refunds once and committed use cannot be refunded',
+      () async {
+    SharedPreferences.setMockInitialValues({});
+    final service = EmergencyUnlockService(SharedPreferences.getInstance(),
+        isPremium: () => false);
+    addTearDown(service.dispose);
+    expect(await service.recordUseIfAvailable(refundable: true), isTrue);
+    expect(service.remainingToday, 0);
+    expect(await service.recordUseIfAvailable(refundable: true), isFalse);
+    await service.refundFailedUse();
+    await service.refundFailedUse();
+    expect(service.remainingToday, 1);
+    expect(await service.recordUseIfAvailable(refundable: true), isTrue);
+    service.completeUse();
+    await service.refundFailedUse();
+    expect(service.remainingToday, 0);
+  });
+
+  test('refund does not erase another use or a new day', () async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    var now = DateTime(2026, 11, 5, 23, 59);
+    final service = EmergencyUnlockService(Future.value(prefs),
+        isPremium: () => true, now: () => now);
+    addTearDown(service.dispose);
+    await service.recordUseIfAvailable(refundable: true);
+    await prefs.setInt(EmergencyUnlockService.countPrefsKey, 2);
+    await service.refundFailedUse();
+    expect(service.usedToday, 2);
+    await service.recordUseIfAvailable(refundable: true);
+    now = DateTime(2026, 11, 6);
+    await service.refundFailedUse();
+    expect(service.usedToday, 0);
+  });
 }
