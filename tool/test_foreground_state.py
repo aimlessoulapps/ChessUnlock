@@ -8,15 +8,22 @@ root = Path(__file__).resolve().parents[1]
 cache = Path.home() / '.gradle/caches/modules-2/files-2.1'
 # Flutter's Android build populates these compiler dependencies.
 jars = []
-for group in ('org.jetbrains.kotlin', 'org.jetbrains.kotlinx', 'org.jetbrains',
-              'org.jetbrains.intellij.deps'):
-    folder = cache / group
+for group, artifact in (
+    ('org.jetbrains.kotlin', 'kotlin-compiler-embeddable'),
+    ('org.jetbrains.kotlin', 'kotlin-stdlib'),
+    ('org.jetbrains.kotlin', 'kotlin-script-runtime'),
+    ('org.jetbrains.kotlin', 'kotlin-reflect'),
+    ('org.jetbrains.kotlin', 'kotlin-daemon-embeddable'),
+    ('org.jetbrains.kotlinx', 'kotlinx-coroutines-core-jvm'),
+    ('org.jetbrains', 'annotations'),
+    ('org.jetbrains.intellij.deps', 'trove4j'),
+):
+    folder = cache / group / artifact
     if folder.exists():
-        for artifact in folder.iterdir():
-            versions = sorted(artifact.iterdir(), key=lambda p: tuple(
-                int(n) if n.isdigit() else 0 for n in p.name.split('.')), reverse=True)
-            if versions:
-                jars.extend(versions[0].rglob('*.jar'))
+        versions = sorted(folder.iterdir(), key=lambda p: tuple(
+            int(n) if n.isdigit() else 0 for n in p.name.split('.')), reverse=True)
+        if versions:
+            jars.extend(versions[0].rglob('*.jar'))
 if not any('kotlin-compiler-embeddable-' in p.name for p in jars):
     raise SystemExit('Run the Android Gradle build first to cache the Kotlin compiler.')
 java_home = Path(os.environ.get('JAVA_HOME', '/Applications/Android Studio.app/Contents/jbr/Contents/Home'))

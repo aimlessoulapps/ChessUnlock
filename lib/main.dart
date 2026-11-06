@@ -1452,7 +1452,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     final permissionStatus = await _appLock.checkPermissions(
       requiresOverlay: _lockEnabled,
     );
-    if (!isCurrent()) return;
+    if (!mounted || !isCurrent()) return;
 
     if (permissionStatus.issue == AppLockPermissionIssue.usageAccessRequired) {
       await showDialog<void>(
@@ -1728,8 +1728,9 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       return false;
     }
     if (emergency) {
-      if (!await _syncLockStateToStorageAndWatcher(includeUnlockState: false))
+      if (!await _syncLockStateToStorageAndWatcher(includeUnlockState: false)) {
         return false;
+      }
       if (!await _emergencyUnlock.recordUseIfAvailable(refundable: true)) {
         _snack("Emergency unlock limit reached for today.");
         return false;
@@ -1758,8 +1759,9 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     try {
       if (!saved) throw StateError("Couldn't save unlock state");
       await _serializeNativeLock(() async {
-        if (revision != _lockStateRevision)
+        if (revision != _lockStateRevision) {
           throw StateError("Unlock superseded");
+        }
         await _appLock.unlockFor(
           minutes == null ? null : Duration(minutes: minutes),
           unlockUntilMs: _unlockedUntil?.millisecondsSinceEpoch,
@@ -1805,8 +1807,9 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
         throw StateError("Couldn't save unlock state");
       }
       await _serializeNativeLock(() async {
-        if (revision != _lockStateRevision)
+        if (revision != _lockStateRevision) {
           throw StateError("Unlock superseded");
+        }
         await _appLock.unlockFor(const Duration(hours: 24),
             unlockUntilMs: _unlockedUntil?.millisecondsSinceEpoch);
       });
@@ -2780,8 +2783,9 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     required _RewardedPuzzleAction action,
     required VoidCallback onRewardEarned,
   }) async {
-    if (_isPremium || !AdConsentService.instance.canRequestAds)
+    if (_isPremium || !AdConsentService.instance.canRequestAds) {
       return _RewardedAdResult.unavailable;
+    }
     final ad = _rewardedAd ?? await _loadRewardedAd(reason: "show");
     if (_isPremium || !AdConsentService.instance.canRequestAds) {
       ad?.dispose();

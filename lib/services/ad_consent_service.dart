@@ -45,7 +45,9 @@ class AdConsentService extends ChangeNotifier {
   Future<void> _initialize() async {
     if (kIsWeb ||
         (defaultTargetPlatform != TargetPlatform.android &&
-            defaultTargetPlatform != TargetPlatform.iOS)) return;
+            defaultTargetPlatform != TargetPlatform.iOS)) {
+      return;
+    }
     try {
       final updated = Completer<bool>();
       _information.requestConsentInfoUpdate(
