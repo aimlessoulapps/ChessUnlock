@@ -3597,6 +3597,8 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
   static const String _privacyPolicyUrl =
       "https://aimlessoulapps.github.io/chessunlock-legal/";
+  static const String _termsOfUseUrl =
+      "https://aimlessoulapps.github.io/chessunlock-legal/terms.html";
   static const String _feedbackEmail = "aimlessoul.apps@gmail.com";
 
   Future<void> _onPrivacyPolicy() async {
@@ -3607,6 +3609,16 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       if (!ok) _snack("Couldn’t open Privacy Policy.");
     } catch (_) {
       _snack("Couldn’t open Privacy Policy.");
+    }
+  }
+
+  Future<void> _onTermsOfUse() async {
+    try {
+      final uri = Uri.parse(_termsOfUseUrl);
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!ok) _snack("Couldn't open Terms of Use.");
+    } catch (_) {
+      _snack("Couldn't open Terms of Use.");
     }
   }
 
@@ -3785,6 +3797,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
               onOpenDifficulty: _openDifficultyPicker,
               onOpenPremium: _openPremiumPaywall,
               onPrivacyPolicy: _onPrivacyPolicy,
+              onTermsOfUse: _onTermsOfUse,
               onAdPrivacyChoices:
                   AdConsentService.instance.privacyOptionsRequired
                       ? _onAdPrivacyChoices

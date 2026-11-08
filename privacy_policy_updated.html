@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Privacy Policy for ChessUnlock on Android and iOS: app restrictions, puzzles, analytics, crash reports, advertising, subscriptions, and privacy choices.">
+  <title>ChessUnlock Privacy Policy</title>
+  <style>
+    :root { --fg: #111; --muted: #555; --bg: #fff; --card: #f6f7f9; --link: #0b57d0; }
+    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; color: var(--fg); background: var(--bg); }
+    header { padding: 28px 16px; background: var(--card); border-bottom: 1px solid #e6e6e6; }
+    .header-inner, main { max-width: 900px; margin: 0 auto; }
+    main { padding: 24px 16px 64px; }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    .sub { margin: 0; color: var(--muted); }
+    h2 { margin-top: 28px; font-size: 20px; }
+    h3 { margin-top: 20px; font-size: 17px; }
+    p, li { line-height: 1.6; }
+    a { color: var(--link); overflow-wrap: anywhere; }
+    code { background: #f2f2f2; padding: 2px 6px; border-radius: 6px; overflow-wrap: anywhere; }
+    .box { background: var(--card); padding: 16px; border-radius: 12px; border: 1px solid #e6e6e6; }
+    .box p:first-child { margin-top: 0; }
+    .box p:last-child { margin-bottom: 0; }
+    .small { color: var(--muted); font-size: 14px; }
+    ul { padding-left: 20px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <h1>Privacy Policy — ChessUnlock</h1>
+      <p class="sub"><strong>Developer:</strong> Aimlessoul</p>
+      <p class="sub"><strong>Last updated:</strong> November 9, 2026</p>
+    </div>
+  </header>
+  <main>
+    <div class="box">
+      <p><strong>Summary:</strong> ChessUnlock helps you manage distractions by restricting selected apps and providing chess puzzles to unlock them. App selections and lock settings are processed locally. The app also communicates with Google/Firebase, RevenueCat, the app stores, and Lichess for analytics, crash reporting, advertising, subscriptions, and puzzles. Onboarding answers, including text entered under “Other,” are sent to analytics. Advertising choices do not switch off analytics or crash reporting.</p>
+    </div>
+
+    <h2>1) About ChessUnlock and this policy</h2>
+    <p>Aimlessoul develops ChessUnlock for Android and iOS. This policy explains information processed through the app and when you contact us. ChessUnlock lets you select apps to restrict, solve chess puzzles, take temporary breaks, use emergency unlocks, and view puzzle progress. Android uses Usage Access and an overlay; iOS uses Apple's Screen Time frameworks and system shields.</p>
+    <p>An optional auto-renewing Premium subscription provides benefits such as longer breaks, additional emergency unlocks, and removal of in-app ads while Premium access is active. Apple or Google processes purchases, and RevenueCat manages subscription access. You do not create a ChessUnlock login account.</p>
+
+    <h2>2) Information processed on your device</h2>
+    <ul>
+      <li><strong>App selections:</strong> Android package names, app labels, and icons used to display and manage your selections; on iOS, Apple's selection tokens for apps, categories, and web domains, together with selection counts.</li>
+      <li><strong>Lock operation:</strong> Whether locking is enabled or paused, unlock duration and deadlines, shielding and relocking state, and information needed to open the puzzle or subscription screen.</li>
+      <li><strong>Emergency unlocks:</strong> Daily usage counts and reset dates, and on Android the temporarily unlocked app and expiry time.</li>
+      <li><strong>Preferences and progress:</strong> Theme, puzzle difficulty, onboarding completion and answers, solved-puzzle count, best rating, and first-try results used to calculate accuracy.</li>
+      <li><strong>Puzzle storage:</strong> Downloaded puzzle queues, the last cached puzzle for each difficulty, and recently seen puzzle identifiers to reduce repetition.</li>
+      <li><strong>Service state:</strong> Cached subscription/customer information, Premium validity information, and SDK-managed identifiers and consent state.</li>
+    </ul>
+    <p>These records use app preferences and SDK storage. On Android, some lock and emergency-unlock state is also stored in device-protected storage so the service can resume after restart. On iOS, selection data is stored in app preferences and shared App Group storage used by the app and its DeviceActivity extension.</p>
+    <p>The app's locking features do not upload your selected-app list, app icons, Screen Time tokens, or a history of foreground-app use to Aimlessoul, Firebase, RevenueCat, or Lichess. Analytics does receive selection counts and lock-related actions, as described below. Local storage does not mean that all information stays on the device: onboarding answers and certain usage events are also transmitted, and operating-system backups or device transfers may include app data depending on your device settings.</p>
+
+    <h3>Android app-use information</h3>
+    <p>With Usage Access enabled, ChessUnlock reads Android usage events, including app package identifiers and foreground/background transitions, to determine which app is currently open. On service startup or recovery it can inspect up to the previous 24 hours of events, then check recent transitions. It uses this information locally to show the blocking overlay for selected apps. This is not access to messages, photos, passwords, or content inside those apps.</p>
+
+    <h3>iOS Screen Time information</h3>
+    <p>FamilyControls lets you authorize restrictions and choose apps, categories, or websites. Apple represents these selections using opaque tokens. ManagedSettings applies or removes shields, and DeviceActivity schedules relocking and activity-threshold callbacks. These features process selections and timing locally; they do not give ChessUnlock the contents of your messages or other apps. Screen Time authorization is separate from advertising privacy choices.</p>
+
+    <h2>3) Information sent to services</h2>
+    <h3>3.1 Firebase Analytics</h3>
+    <p>ChessUnlock uses Google Analytics for Firebase to understand feature use and improve the app. It logs screen views, onboarding progress and answers, app-selection counts, lock and unlock actions, selected break duration, puzzle starts and completions, puzzle type and difficulty, Hint/Skip actions and rewarded-ad outcomes, theme changes, and taps on feedback and privacy-policy links. Android also logs when the blocking overlay is shown and when its Open ChessUnlock button is tapped.</p>
+    <p><strong>The onboarding question about where you heard about ChessUnlock is not local-only.</strong> Your selected answer and any text entered under “Other” are saved locally and passed to Firebase Analytics. Changes to that text can be logged while you type, before completing onboarding. Please do not enter names, email addresses, or other personal or sensitive information in that field.</p>
+    <p>Analytics also processes SDK-generated app-instance identifiers, app/device and operating-system information, sessions and other automatic events, and approximate geography derived from network information. Android advertising identifiers can be collected where available. Automatic purchase-related measurement can occur where supported by the platform and service configuration. These identifiers can distinguish an installation even though you have no ChessUnlock account. The app does not explicitly attach a name, email address, selected-app names, or Screen Time tokens to its event parameters.</p>
+    <p>Firebase initializes at startup, before the advertising-consent flow. ChessUnlock currently has no separate in-app switch to disable Analytics, and the app does not use the Ad privacy choices control to disable it.</p>
+
+    <h3>3.2 Firebase Crashlytics</h3>
+    <p>Google's Firebase Crashlytics receives crash and error reports to help diagnose failures. Reports can include exception messages, stack traces, crash times, app and OS versions, device model and technical state, and installation/session identifiers. ChessUnlock adds logs for app opening, puzzle starts and completions with type and difficulty, and Android overlay display. Analytics events can also supply breadcrumbs showing activity before a crash. Error messages or breadcrumbs may contain information associated with the action that failed.</p>
+    <p>Crash reporting operates independently of advertising choices and Premium status. There is no separate in-app Crashlytics opt-out control.</p>
+
+    <h3>3.3 Google AdMob and advertising choices</h3>
+    <p>Free users can see banner ads and choose rewarded ads for Hint and Skip features. Google Mobile Ads processes advertising requests and associated network, device, interaction, and diagnostic information. Depending on platform, settings, and availability, this includes IP addresses and approximate location derived from them, advertising or app/device identifiers, ads shown, clicks, video interactions, and performance or error information. Google and participating advertising providers use this information to deliver and measure ads, support personalization where allowed, and detect fraud or abuse. Non-personalized or limited ads can still involve data processing.</p>
+    <p>ChessUnlock integrates Google's User Messaging Platform (UMP). On launch, it requests updated consent information, attempts to display a required message, and checks UMP's ad-request eligibility before initializing ads and requesting placements. If an update fails, UMP may use a previous session's state. An eligible ad request does not by itself mean that you consented to personalized advertising.</p>
+    <p>When UMP reports that privacy options are required, <strong>Settings → Support → Ad privacy choices</strong> lets Free and Premium users reopen the privacy form. Ad loading is suspended while that form is open and eligibility is checked again afterward. This control is conditional and may not appear. Available messages and choices depend on region and the messages configured in AdMob. Regional EEA/UK and US-state messages have not yet been configured by Aimlessoul, so this policy does not represent that a regional consent or opt-out form is currently available to every affected user. You can contact us about advertising privacy requests.</p>
+    <p>Android advertising settings can limit or remove the advertising ID, depending on your OS version. The current iOS app does not request App Tracking Transparency authorization. On iOS versions requiring that authorization, an IDFA is not available without it; other permitted SDK information can still be processed. UMP choices and Apple's tracking permission are different controls.</p>
+    <p>Active Premium access suppresses banner and rewarded ads. Premium does not disable Analytics, Crashlytics, RevenueCat, or the launch-time UMP check; the ads SDK may still initialize if UMP reports eligibility.</p>
+
+    <h3>3.4 Premium, RevenueCat, and app-store billing</h3>
+    <p>RevenueCat initializes to check subscription status, including for users who have not purchased Premium. It generates and persists an anonymous App User ID, rather than receiving a ChessUnlock login or your email address from the app. “Anonymous” here means no named login is supplied; the identifier still links subscription activity to a customer record.</p>
+    <p>RevenueCat and the applicable store process purchase receipts or purchase tokens, product and transaction identifiers, store/platform, purchase and expiry dates, entitlement status, and available renewal, cancellation, billing-issue, refund, and restoration information. Technical request information, such as app/SDK versions and platform information, supports this service. ChessUnlock retrieves customer information and uses the Premium entitlement and expiry to grant or end paid access. RevenueCat also provides subscription reporting.</p>
+    <p>Apple App Store or Google Play handles payment authorization, recurring billing, cancellation, and refunds under its own terms. ChessUnlock does not collect your full payment-card number, card security code, or store password. Canceling renewal normally leaves access until the paid entitlement expires; refund and revocation information can change access when reflected by the store and RevenueCat. Restore Purchases checks store-linked purchases again.</p>
+    <p>Use Manage Subscription in the app or your store's subscription settings to manage or cancel renewal. Uninstalling ChessUnlock or requesting data deletion does not cancel a subscription or automatically erase store transaction records.</p>
+
+    <h3>3.5 Lichess puzzle delivery</h3>
+    <p>Puzzles are fetched over HTTPS from Lichess's puzzle API when the local queue or cache needs content. Requests include the selected difficulty, an app-identifying User-Agent, and ordinary connection information such as your IP address. No Lichess login is required. ChessUnlock does not send your moves, local statistics, locked-app selections, or subscription information in these puzzle requests. Downloaded puzzles and recent puzzle IDs are cached locally; cached content can be reused when available.</p>
+
+    <h3>3.6 Feedback and support</h3>
+    <p>Feedback opens your email app with a suggested subject and message. You decide whether to send it and what to include; ChessUnlock does not automatically attach device logs, screenshots, or your app selections. If you send email, Aimlessoul and the email providers handling delivery receive your email address, message, and any attachments or other information you include. We use that information to respond to your request. Opening Feedback is separately recorded as an analytics event.</p>
+
+    <h2>4) Permissions and capabilities</h2>
+    <h3>Android</h3>
+    <ul>
+      <li><strong>Usage Access:</strong> Read usage events to detect a selected app in the foreground.</li>
+      <li><strong>Display over other apps:</strong> Show the blocking overlay.</li>
+      <li><strong>Foreground service, special-use service, and notifications:</strong> Keep the watcher operating and display its service notification.</li>
+      <li><strong>Boot and app-update broadcasts:</strong> Resume eligible app monitoring after restart, device unlock, or an app update.</li>
+      <li><strong>Internet and network state:</strong> Obtain puzzles and communicate with the SDK services described above.</li>
+      <li><strong>Billing:</strong> Purchase and restore store subscriptions.</li>
+      <li><strong>Advertising ID and SDK advertising/attribution capabilities:</strong> Support advertising and measurement subject to device and service controls. Bundled SDKs also declare ad-services, install-referrer, and wake-lock capabilities. A declared capability does not mean every associated feature is used on every device.</li>
+    </ul>
+    <h3>iOS</h3>
+    <p>Screen Time/FamilyControls authorization permits the selected restrictions. ManagedSettings, DeviceActivity, and App Group capabilities support shields and relocking. Network access supports the services above; it is not a separate iOS permission prompt. Store purchases use Apple's purchase flow. The current app does not display a tracking-permission prompt.</p>
+    <p>The app does not request contacts, camera, microphone, photo-library, or precise-location access for its features. Denying or revoking app-lock permissions can prevent app restrictions from working. You can manage permissions in your device settings.</p>
+
+    <h2>5) Recipients and international processing</h2>
+    <p>Information is made available to Google/Firebase for analytics, diagnostics, advertising and consent management; RevenueCat for subscription management; Apple or Google for store services; Lichess for puzzle delivery; and email providers when you contact us. Aimlessoul can access information made available through service dashboards and support correspondence. Advertising providers may process data under their own policies, rather than only on Aimlessoul's behalf.</p>
+    <p>Advertising disclosures may qualify as “sharing,” “sale,” or targeted advertising under some privacy laws even where information is not exchanged for money. This policy does not make a blanket claim that no such activity occurs. Applicable advertising choices and request channels are described in Sections 3.3 and 7.</p>
+    <p>Providers may process information outside your country, including in the United States and other countries where they operate. Their policies describe their processing locations and transfer arrangements. Contact Aimlessoul for questions about the arrangements applicable to your information. This policy does not claim that information is stored only in India, the European Union, or the United Kingdom.</p>
+    <p>Further information:</p>
+    <ul>
+      <li><a href="https://policies.google.com/privacy">Google Privacy Policy</a> and <a href="https://policies.google.com/technologies/ads">Google advertising information</a>.</li>
+      <li><a href="https://firebase.google.com/support/privacy">Firebase privacy and security information</a>.</li>
+      <li><a href="https://www.revenuecat.com/privacy/">RevenueCat Privacy Policy</a> and <a href="https://www.revenuecat.com/docs/platform-resources/apple-platform-resources/apple-app-privacy">RevenueCat app-data disclosures</a>.</li>
+      <li><a href="https://www.apple.com/legal/privacy/">Apple Privacy Policy</a>.</li>
+      <li><a href="https://lichess.org/privacy">Lichess Privacy Policy</a>.</li>
+    </ul>
+    <p>External pages, app stores, advertisements, and your email app have their own privacy practices when you open or use them.</p>
+
+    <h2>6) Retention and deletion</h2>
+    <p>Local preferences, selections, and statistics persist until replaced or removed with app data. Puzzle caches are updated as puzzles are downloaded and used; recent-puzzle history is bounded. Emergency-unlock counters reset by day. These functional updates are not a comprehensive data-deletion service.</p>
+    <p>You can clear app storage in Android settings or delete the app from your device to remove its ordinary local data. Offloading an iOS app can preserve data. Backups, shared containers, SDK storage, and records already held by providers may persist or be restored, so uninstalling is not a guarantee that every copy is erased. Review device backup settings and revoke app-lock/Screen Time access when discontinuing use.</p>
+    <p>There is no in-app account-deletion or server-data-deletion control. Aimlessoul has not established a custom Firebase retention configuration or a documented retention/deletion schedule for service records and support correspondence. This means no fixed Aimlessoul deletion deadline is promised here. Provider defaults, service settings, and applicable legal requirements govern records held by the services. Subscription and transaction information may remain for billing, restoration, fraud prevention, and legally required records.</p>
+    <p>To request access or deletion, email <a href="mailto:aimlessoul.apps@gmail.com">aimlessoul.apps@gmail.com</a>, describe your request, and identify the platform and information concerned. We may need limited additional information to verify the request and locate records. Because the app has no named user account and SDK identifiers are separate, an email address alone may not identify analytics, crash, or subscription records. Please do not send passwords or complete payment-card details. Requests concerning records independently controlled by Apple, Google, Lichess, or another provider may also need to be directed to that provider.</p>
+
+    <h2>7) Your choices and applicable rights</h2>
+    <p>You can change app selections and settings, revoke device permissions, use available Ad privacy choices, adjust device advertising controls, manage store subscriptions, choose whether to send feedback, and remove local app data. Turning off app locking does not turn off the other SDK services. Removing an advertising ID does not remove previously collected records or all other identifiers.</p>
+    <p>Depending on the law applicable to you and the processing concerned, rights may include access, correction, deletion, a portable copy, restriction of processing, objection, and withdrawal of consent where consent is the basis for processing. In the EEA and UK, you may also complain to your data-protection authority. Some US state laws provide rights to opt out of sale, sharing, or targeted advertising, appeal certain request decisions, and exercise rights without unlawful discrimination, where those laws apply. For users in India, available rights and grievance routes depend on the provisions in force and applicable to the processing.</p>
+    <p>Send privacy requests or complaints to the contact below. Rights can be subject to verification, legal exceptions, and the provider's role. Advertising consent withdrawal does not erase prior processing or automatically disable Analytics and Crashlytics. Reading this policy or using the app is not, by itself, consent to every processing activity described here.</p>
+
+    <h2>8) Children's privacy</h2>
+    <p>ChessUnlock's intended audience is ages 3 and above, which includes children. This is an audience statement, not a claim that a store has assigned that age rating or that the app has child-specific privacy protections. The current app does not ask for age, provide a separate child mode, or obtain verifiable parental consent for analytics and advertising. The service processing described in this policy can therefore occur when a child uses the app.</p>
+    <p>Apple Screen Time or FamilyControls authorization is permission for app restrictions; it is not parental consent to advertising or analytics. Parents or guardians can contact <a href="mailto:aimlessoul.apps@gmail.com">aimlessoul.apps@gmail.com</a> about a child's information, including requests to review or delete it or stop further processing where applicable. Do not include unnecessary information about a child in onboarding or support messages.</p>
+
+    <h2>9) Security</h2>
+    <p>Local records use platform app storage and access controls. The Lichess request uses HTTPS, and SDK providers describe their own transmission and storage safeguards in their documentation. App preferences are not a separate encrypted vault, and no method of storage or transmission is completely secure. App locking itself is not a guarantee that another app's content is inaccessible under every device condition.</p>
+
+    <h2>10) Changes to this policy</h2>
+    <p>We may update this policy as the app, providers, data practices, or applicable requirements change. The date at the top identifies the latest update. Additional notice or consent may be required by applicable law for particular changes.</p>
+
+    <h2>11) Contact</h2>
+    <p>For privacy questions, requests, complaints, or support:</p>
+    <ul>
+      <li><strong>Developer:</strong> Aimlessoul</li>
+      <li><strong>Email:</strong> <a href="mailto:aimlessoul.apps@gmail.com">aimlessoul.apps@gmail.com</a></li>
+    </ul>
+    <p class="small">App: ChessUnlock<br>Android package: <code>com.aimlessoul.chessunlock</code><br>iOS bundle ID: <code>com.aimlessoul.chessunlock</code></p>
+  </main>
+</body>
+</html>

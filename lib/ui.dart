@@ -2167,6 +2167,7 @@ class SettingsTab extends StatelessWidget {
   final VoidCallback onOpenPremium;
 
   final Future<void> Function() onPrivacyPolicy;
+  final Future<void> Function() onTermsOfUse;
   final Future<void> Function()? onAdPrivacyChoices;
   final Future<void> Function() onFeedback;
 
@@ -2186,6 +2187,7 @@ class SettingsTab extends StatelessWidget {
     required this.onOpenDifficulty,
     required this.onOpenPremium,
     required this.onPrivacyPolicy,
+    required this.onTermsOfUse,
     this.onAdPrivacyChoices,
     required this.onFeedback,
   });
@@ -2410,6 +2412,17 @@ class SettingsTab extends StatelessWidget {
                         trailing: Icon(Icons.chevron_right_rounded,
                             color: cs.onSurfaceVariant),
                         onTap: onPrivacyPolicy,
+                      ),
+                      Divider(
+                          height: 8,
+                          color: cs.outlineVariant.withValues(alpha: 0.35)),
+                      SettingsRow(
+                        icon: Icons.description_rounded,
+                        title: "Terms of Use",
+                        subtitle: "View our terms of use",
+                        trailing: Icon(Icons.chevron_right_rounded,
+                            color: cs.onSurfaceVariant),
+                        onTap: onTermsOfUse,
                       ),
                       Divider(
                           height: 8,

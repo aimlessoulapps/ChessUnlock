@@ -28,6 +28,7 @@ void main() {
         onOpenDifficulty: () async {},
         onOpenPremium: () => purchases++,
         onPrivacyPolicy: () async {},
+        onTermsOfUse: () async {},
         onFeedback: () async {},
       ))));
       expect(find.text('Premium details'), findsNothing);
