@@ -42,7 +42,11 @@ class AppAnalytics {
         "onboarding_answer_$question",
         parameters: {
           ..._screenParameters(_onboardingScreen),
-          "answer": answer,
+          // Keep free-text source details local; send only predefined labels.
+          "answer": question == "source" &&
+                  !const {"Social media", "Google/Ai", "Other"}.contains(answer)
+              ? "Other"
+              : answer,
         },
       );
 

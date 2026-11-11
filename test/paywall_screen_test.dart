@@ -1,5 +1,6 @@
 import 'package:chessUnlock/services/premium_access_service.dart';
 import 'package:chessUnlock/ui.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -20,7 +21,66 @@ class _RecordingPremiumAccess extends PremiumAccessService {
 }
 
 void main() {
-  testWidgets('paywall exposes privacy policy and handles launch failure',
+  for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
+    testWidgets('$platform legal links below purchase open separate pages',
+        (tester) async {
+      debugDefaultTargetPlatformOverride = platform;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      tester.view.physicalSize = const Size(430, 1200);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      SharedPreferences.setMockInitialValues({});
+      final access = _RecordingPremiumAccess(FakeRevenueCatClient());
+      final launches = <Map<dynamic, dynamic>>[];
+      const channel = MethodChannel('plugins.flutter.io/url_launcher');
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel,
+          (call) async {
+        if (call.method == 'launch') {
+          launches.add(call.arguments as Map<dynamic, dynamic>);
+        }
+        return true;
+      });
+      addTearDown(() => tester.binding.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null));
+      await tester.pumpWidget(MaterialApp(home: PaywallScreen(access: access)));
+      final terms = find.text('Terms of Use');
+      final privacy = find.text('Privacy Policy');
+      expect(terms, findsOneWidget);
+      expect(privacy, findsOneWidget);
+      expect(find.text('·'), findsOneWidget);
+      expect(tester.getTopLeft(terms).dy,
+          greaterThan(tester.getBottomLeft(find.byType(FilledButton)).dy));
+      expect(tester.getTopLeft(terms).dy, tester.getTopLeft(privacy).dy);
+      expect(tester.getBottomLeft(terms).dy,
+          lessThan(tester.getTopLeft(find.byType(OutlinedButton)).dy));
+      for (final link in [terms, privacy]) {
+        await tester.ensureVisible(link);
+        await tester.tap(link);
+        await tester.pumpAndSettle();
+      }
+      expect(launches.map((call) => call['url']), [
+        'https://aimlessoulapps.github.io/chessunlock-legal/terms.html',
+        'https://aimlessoulapps.github.io/chessunlock-legal/',
+      ]);
+      for (final launch in launches) {
+        expect(launch['useSafariVC'], isFalse);
+        expect(launch['useWebView'], isFalse);
+      }
+      tester.view.physicalSize = const Size(320, 1000);
+      tester.platformDispatcher.textScaleFactorTestValue = 1.6;
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(privacy);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      access.dispose();
+      debugDefaultTargetPlatformOverride = null;
+    });
+  }
+
+  testWidgets('paywall handles legal-link launch failure and exception',
       (tester) async {
     SharedPreferences.setMockInitialValues({});
     final access = _RecordingPremiumAccess(FakeRevenueCatClient());
@@ -28,7 +88,13 @@ void main() {
     const channel = MethodChannel('plugins.flutter.io/url_launcher');
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel,
         (call) async {
-      if (call.method == 'launch') urls.add(call.arguments['url'] as String);
+      if (call.method == 'launch') {
+        final url = call.arguments['url'] as String;
+        urls.add(url);
+        if (url.endsWith('terms.html')) {
+          throw PlatformException(code: 'launch_failed');
+        }
+      }
       return false;
     });
     addTearDown(() => tester.binding.defaultBinaryMessenger
@@ -39,8 +105,16 @@ void main() {
     await tester.tap(find.text('Privacy Policy'));
     await tester.pumpAndSettle();
     expect(urls, ['https://aimlessoulapps.github.io/chessunlock-legal/']);
-    expect(find.text("Couldn't open Privacy Policy. Please try again."),
+    expect(find.text('Couldn’t open Privacy Policy.'),
         findsOneWidget);
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Terms of Use'));
+    await tester.tap(find.text('Terms of Use'));
+    await tester.pumpAndSettle();
+    expect(urls.last,
+        'https://aimlessoulapps.github.io/chessunlock-legal/terms.html');
+    expect(find.text("Couldn't open Terms of Use."), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
     access.dispose();
   });

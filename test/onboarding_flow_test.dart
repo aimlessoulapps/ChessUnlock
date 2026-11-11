@@ -4,6 +4,29 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets('Other keeps typed source details in the local-save callback',
+      (tester) async {
+    final answers = <String, String>{};
+    await tester.pumpWidget(MaterialApp(
+      home: OnboardingFlow(
+        onAnswerSelected: (key, answer) async => answers[key] = answer,
+        onPermissionContinue: () async {},
+      ),
+    ));
+    await tester.tap(find.text('Get started'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Other'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'private@example.com');
+    await tester.pump();
+
+    expect(answers, {'source': 'Other: private@example.com'});
+    expect(find.text('private@example.com'), findsOneWidget);
+    await tester.tap(find.text('Continue'));
+    await tester.pumpAndSettle();
+    expect(find.text('Small puzzles, real progress'), findsOneWidget);
+  });
+
   for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
     testWidgets(
         '$platform five onboarding steps retain permission and app selection',

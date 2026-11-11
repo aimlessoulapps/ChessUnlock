@@ -13,6 +13,7 @@ import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'firebase_options.dart';
+import 'legal_links.dart';
 import 'services/app_lock/app_lock_service.dart';
 import 'services/analytics_service.dart';
 import 'services/crashlytics_service.dart';
@@ -3595,31 +3596,15 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     }
   }
 
-  static const String _privacyPolicyUrl =
-      "https://aimlessoulapps.github.io/chessunlock-legal/";
-  static const String _termsOfUseUrl =
-      "https://aimlessoulapps.github.io/chessunlock-legal/terms.html";
   static const String _feedbackEmail = "aimlessoul.apps@gmail.com";
 
   Future<void> _onPrivacyPolicy() async {
     AppAnalytics.privacyPolicyTapped();
-    try {
-      final uri = Uri.parse(_privacyPolicyUrl);
-      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (!ok) _snack("Couldn’t open Privacy Policy.");
-    } catch (_) {
-      _snack("Couldn’t open Privacy Policy.");
-    }
+    await LegalLinks.openPrivacyPolicy(context);
   }
 
   Future<void> _onTermsOfUse() async {
-    try {
-      final uri = Uri.parse(_termsOfUseUrl);
-      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (!ok) _snack("Couldn't open Terms of Use.");
-    } catch (_) {
-      _snack("Couldn't open Terms of Use.");
-    }
+    await LegalLinks.openTermsOfUse(context);
   }
 
   Future<void> _onFeedback() async {

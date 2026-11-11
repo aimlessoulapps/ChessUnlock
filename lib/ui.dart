@@ -12,7 +12,7 @@ import 'package:google_mobile_ads/google_mobile_ads.dart';
 
 import 'services/premium_access_service.dart';
 import 'services/ad_consent_service.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'legal_links.dart';
 
 class ChessPuzzle {
   final String id;
@@ -3379,6 +3379,32 @@ class PaywallScreen extends StatelessWidget {
                     ? 'Manage Subscription'
                     : 'Continue / Subscribe Monthly'),
               ),
+              const SizedBox(height: 4),
+              Wrap(
+                alignment: WrapAlignment.center,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  TextButton(
+                    style: TextButton.styleFrom(
+                      textStyle: Theme.of(context).textTheme.bodySmall,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      minimumSize: const Size(0, 40),
+                    ),
+                    onPressed: () => LegalLinks.openTermsOfUse(context),
+                    child: const Text('Terms of Use'),
+                  ),
+                  Text('·', style: TextStyle(color: cs.onSurfaceVariant)),
+                  TextButton(
+                    style: TextButton.styleFrom(
+                      textStyle: Theme.of(context).textTheme.bodySmall,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      minimumSize: const Size(0, 40),
+                    ),
+                    onPressed: () => LegalLinks.openPrivacyPolicy(context),
+                    child: const Text('Privacy Policy'),
+                  ),
+                ],
+              ),
               const SizedBox(height: 8),
               OutlinedButton(
                 onPressed: access.busy
@@ -3392,26 +3418,6 @@ class PaywallScreen extends StatelessWidget {
                     onPressed: access.busy ? null : access.loadOffering,
                     child: const Text('Retry')),
               ],
-              TextButton(
-                onPressed: () async {
-                  var opened = false;
-                  try {
-                    opened = await launchUrl(
-                      Uri.parse(
-                          'https://aimlessoulapps.github.io/chessunlock-legal/'),
-                      mode: LaunchMode.externalApplication,
-                    );
-                  } catch (_) {}
-                  if (!opened && context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                          content: Text(
-                              "Couldn't open Privacy Policy. Please try again.")),
-                    );
-                  }
-                },
-                child: const Text("Privacy Policy"),
-              ),
               TextButton(
                 onPressed: () => Navigator.maybePop(context),
                 child: const Text("Not now"),
