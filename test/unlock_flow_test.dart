@@ -35,12 +35,14 @@ void main() {
   const ios = MethodChannel('chesslock/screen_time');
   final calls = <MethodCall>[];
   var failScheduling = false;
+  var failWatcher = false;
   Completer<Map<String, Object>>? heldSelection;
   late FakeRevenueCatClient client;
 
   setUp(() {
     calls.clear();
     failScheduling = false;
+    failWatcher = false;
     heldSelection = null;
     client = FakeRevenueCatClient();
     for (final channel in [android, ios]) {
@@ -48,6 +50,11 @@ void main() {
           .setMockMethodCallHandler(channel, (call) async {
         calls.add(call);
         switch (call.method) {
+          case 'startWatcher':
+            if (failWatcher) {
+              throw PlatformException(code: 'watcherUnavailable');
+            }
+            return null;
           case 'getEmergencyUnlockUsage':
             final prefs = await SharedPreferences.getInstance();
             return {
@@ -150,6 +157,27 @@ void main() {
 
   PuzzleTab puzzleTab(WidgetTester tester) =>
       tester.widget<PuzzleTab>(find.byType(PuzzleTab, skipOffstage: false));
+
+  testWidgets('Android watcher refusal stays visible until a successful retry',
+      (tester) async {
+    failWatcher = true;
+    await launch(tester, TargetPlatform.android);
+    expect(find.byType(MaterialBanner), findsOneWidget);
+    await pumpFrames(tester, 30); // Outlast transient snackbars.
+    expect(find.textContaining('App locking is not running.'), findsOneWidget);
+    await tester.tap(find.text('Retry'));
+    await pumpFrames(tester);
+    expect(find.byType(MaterialBanner), findsOneWidget);
+    failWatcher = false;
+    await tester.tap(find.text('Retry'));
+    await pumpFrames(tester);
+    expect(find.byType(MaterialBanner), findsNothing);
+    expect(calls.where((c) => c.method == 'startWatcher').length,
+        greaterThanOrEqualTo(3));
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    debugDefaultTargetPlatformOverride = null;
+  });
 
   for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
     for (final size in [const Size(320, 568), const Size(430, 932)]) {

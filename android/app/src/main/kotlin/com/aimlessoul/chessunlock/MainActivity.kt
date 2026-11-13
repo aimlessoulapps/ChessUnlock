@@ -14,6 +14,10 @@ import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.ResultReceiver
 import android.provider.Settings
 import android.util.Base64
 import android.util.Log
@@ -28,6 +32,51 @@ class MainActivity : FlutterActivity() {
     private val maxIconDimension = 192
     private val maxIconPngBytes = 512 * 1024
     private val notificationPermissionRequestCode = 4101
+    private var resumed = false
+
+    override fun onResume() {
+        super.onResume()
+        resumed = true
+    }
+
+    override fun onPause() {
+        resumed = false
+        super.onPause()
+    }
+
+    private fun startWatcher(result: MethodChannel.Result) {
+        if (ForegroundAppWatcherService.isRunning) {
+            result.success(null)
+            return
+        }
+        if (!resumed) {
+            WatcherRecovery.show(this)
+            result.error("watcherUnavailable", "Open ChessUnlock to resume app locking.", null)
+            return
+        }
+        val handler = Handler(Looper.getMainLooper())
+        var completed = false
+        fun complete(success: Boolean) {
+            if (completed) return
+            completed = true
+            handler.removeCallbacksAndMessages(null)
+            if (success) result.success(null)
+            else result.error("watcherUnavailable", "App locking is not running. Tap Retry in ChessUnlock.", null)
+        }
+        val receiver = object : ResultReceiver(handler) {
+            override fun onReceiveResult(resultCode: Int, resultData: Bundle?) {
+                complete(resultCode == 1)
+            }
+        }
+        handler.postDelayed({
+            if (!completed) {
+                ForegroundAppWatcherService.stop(this)
+                WatcherRecovery.show(this)
+                complete(false)
+            }
+        }, 8_000L)
+        if (!ForegroundAppWatcherService.start(this, receiver)) complete(false)
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -82,12 +131,11 @@ class MainActivity : FlutterActivity() {
                 }
 
                 "startWatcher" -> {
-                    ForegroundAppWatcherService.start(this)
-                    result.success(null)
+                    startWatcher(result)
                 }
 
                 "hideWatcherOverlay" -> {
-                    ForegroundAppWatcherService.requestHideOverlay(this)
+                    ForegroundAppWatcherService.requestHideOverlay()
                     result.success(null)
                 }
 

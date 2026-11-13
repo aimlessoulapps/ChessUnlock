@@ -9,6 +9,7 @@ import 'package:chess/chess.dart' as ch;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart' hide Uint8List;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -1412,7 +1413,29 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   }
 
   int _lockStateRevision = 0;
+  bool _watcherStartFailed = false;
   Future<void> _nativeLockTail = Future<void>.value();
+
+  Future<void> _startAppLockEnforcement() async {
+    try {
+      await _appLock.startEnforcement();
+      if (mounted && _watcherStartFailed) {
+        setState(() => _watcherStartFailed = false);
+      }
+    } on PlatformException catch (error) {
+      if (mounted && error.code == 'watcherUnavailable') {
+        setState(() => _watcherStartFailed = true);
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _stopAppLockEnforcement() async {
+    await _appLock.stopEnforcement();
+    if (mounted && _watcherStartFailed) {
+      setState(() => _watcherStartFailed = false);
+    }
+  }
 
   Future<void> _serializeNativeLock(Future<void> Function() operation) {
     final next = _nativeLockTail.then((_) async {
@@ -1437,12 +1460,12 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
     if (!isCurrent()) return;
     if (!hasConfiguredLocks) {
-      await _appLock.stopEnforcement();
+      await _stopAppLockEnforcement();
       return;
     }
 
     if (!_appLock.isSupported) {
-      await _appLock.stopEnforcement();
+      await _stopAppLockEnforcement();
       if (!_unsupportedAppLockMessageShown && mounted) {
         _unsupportedAppLockMessageShown = true;
         _snack(_appLock.unsupportedMessage);
@@ -1480,7 +1503,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
           ],
         ),
       );
-      if (isCurrent()) await _appLock.stopEnforcement();
+      if (isCurrent()) await _stopAppLockEnforcement();
       return;
     }
 
@@ -1510,20 +1533,20 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
           ],
         ),
       );
-      if (isCurrent()) await _appLock.stopEnforcement();
+      if (isCurrent()) await _stopAppLockEnforcement();
       return;
     }
 
     if (permissionStatus.issue ==
         AppLockPermissionIssue.screenTimeAuthorizationRequired) {
       _snack("Screen Time permission is required.");
-      if (isCurrent()) await _appLock.stopEnforcement();
+      if (isCurrent()) await _stopAppLockEnforcement();
       return;
     }
 
     if (permissionStatus.issue == AppLockPermissionIssue.unsupported) {
       _snack(_appLock.unsupportedMessage);
-      await _appLock.stopEnforcement();
+      await _stopAppLockEnforcement();
       return;
     }
 
@@ -1536,15 +1559,15 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       if (!isCurrent()) return;
 
       if (_lockEnabled) {
-        await _appLock.startEnforcement();
+        await _startAppLockEnforcement();
       } else {
         if (!_appLock.usesNativeAppPicker) {
-          await _appLock.startEnforcement();
+          await _startAppLockEnforcement();
         }
         if (isCurrent()) await _appLock.hideActiveBlocker();
       }
     } else {
-      await _appLock.stopEnforcement();
+      await _stopAppLockEnforcement();
     }
   }
 
@@ -3792,9 +3815,26 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
           ],
         ),
       ),
-      bottomNavigationBar: PremiumNavBar(
-        index: _tab,
-        onChanged: _selectTab,
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (_watcherStartFailed)
+            MaterialBanner(
+              content: const Text(
+                'App locking is not running. Keep ChessUnlock open and tap Retry.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: _queueAppLockReconciliation,
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
+          PremiumNavBar(
+            index: _tab,
+            onChanged: _selectTab,
+          ),
+        ],
       ),
     );
   }

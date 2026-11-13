@@ -10,6 +10,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.ResultReceiver
+import android.util.Log
 import android.view.Gravity
 import android.view.WindowManager
 import android.widget.Button
@@ -21,6 +23,7 @@ import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
+import java.lang.ref.WeakReference
 
 class ForegroundAppWatcherService : Service() {
 
@@ -28,34 +31,50 @@ class ForegroundAppWatcherService : Service() {
         private const val CHANNEL_ID = "chesslock_watcher"
         private const val NOTIF_ID = 14001
 
-        private const val ACTION_HIDE_OVERLAY = "chesslock.action.HIDE_OVERLAY"
+        private const val EXTRA_START_RESULT = "watcherStartResult"
+        private var activeService = WeakReference<ForegroundAppWatcherService>(null)
+        val isRunning: Boolean get() = activeService.get()?.running == true
         private const val FOREGROUND_POLL_ACTIVE_MS = 800L
         private const val OVERLAY_CONFIRM_DELAY_MS = 100L
         private const val SELF_OPEN_SUPPRESS_MS = 1800L
 
-        fun start(ctx: Context) {
+        // A successful request is not proof of successful foreground promotion.
+        fun start(ctx: Context, result: ResultReceiver? = null): Boolean {
             val i = Intent(ctx, ForegroundAppWatcherService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                ctx.startForegroundService(i)
-            } else {
-                ctx.startService(i)
+                .putExtra(EXTRA_START_RESULT, result)
+            return try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    ctx.startForegroundService(i)
+                } else {
+                    ctx.startService(i)
+                }
+                true
+            } catch (error: RuntimeException) {
+                if (!isStartFailure(error)) throw error
+                Log.w("ChessUnlockWatcher", "Watcher launch refused", error)
+                WatcherRecovery.show(ctx)
+                false
             }
         }
 
-        fun requestHideOverlay(ctx: Context) {
-            val i = Intent(ctx, ForegroundAppWatcherService::class.java)
-            i.action = ACTION_HIDE_OVERLAY
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                ctx.startForegroundService(i)
-            } else {
-                ctx.startService(i)
-            }
+        fun requestHideOverlay() {
+            // All callers and lifecycle callbacks run on the main thread.
+            activeService.get()?.suppressOverlay()
         }
 
         fun stop(ctx: Context) {
+            // Invalidate status immediately; stopService/onDestroy are asynchronous.
+            activeService.get()?.stopMonitoring()
             val i = Intent(ctx, ForegroundAppWatcherService::class.java)
             ctx.stopService(i)
+            WatcherRecovery.clear(ctx)
         }
+
+        private fun isStartFailure(error: RuntimeException): Boolean =
+            // Includes ForegroundServiceStartNotAllowedException on API 31+,
+            // without referencing that class on older devices.
+            error is IllegalStateException || error is SecurityException ||
+                error is IllegalArgumentException
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -159,27 +178,52 @@ class ForegroundAppWatcherService : Service() {
     override fun onCreate() {
         super.onCreate()
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
-        createNotificationChannel()
-        startForeground(NOTIF_ID, buildNotification())
+        try {
+            createNotificationChannel()
+            startForeground(NOTIF_ID, buildNotification())
+        } catch (error: RuntimeException) {
+            if (!isStartFailure(error)) throw error
+            Log.w("ChessUnlockWatcher", "Watcher foreground promotion refused", error)
+            // Never poll, draw overlays, or request a sticky restart after refusal.
+            stopSelf()
+            WatcherRecovery.show(this)
+            return
+        }
         running = true
+        activeService = WeakReference(this)
+        WatcherRecovery.clear(this)
         handler.post(tick)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_HIDE_OVERLAY) {
-            clearPendingBlockedPackage()
-            suppressOverlayUntilMs = System.currentTimeMillis() + SELF_OPEN_SUPPRESS_MS
-            foregroundState.resumed(packageName)
-            hideOverlay()
+        @Suppress("DEPRECATION")
+        val result = intent?.getParcelableExtra<ResultReceiver>(EXTRA_START_RESULT)
+        result?.send(if (running) 1 else 0, null)
+        if (!running) {
+            stopSelf()
+            return START_NOT_STICKY
         }
         return START_STICKY
     }
 
+    private fun suppressOverlay() {
+        if (!running) return
+        clearPendingBlockedPackage()
+        suppressOverlayUntilMs = System.currentTimeMillis() + SELF_OPEN_SUPPRESS_MS
+        foregroundState.resumed(packageName)
+        hideOverlay()
+    }
+
     override fun onDestroy() {
+        stopMonitoring()
+        super.onDestroy()
+    }
+
+    private fun stopMonitoring() {
         running = false
+        if (activeService.get() === this) activeService.clear()
         hideOverlay()
         handler.removeCallbacksAndMessages(null)
-        super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
