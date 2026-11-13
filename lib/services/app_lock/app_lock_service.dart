@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import '../ad_consent_service.dart';
 
 enum AppLockPermissionIssue {
   none,
@@ -392,6 +393,8 @@ class IosScreenTimeAppLockService extends AppLockService {
     final available = await _isScreenTimeAvailable();
     if (!available) return;
 
+    // Serialize the iOS Screen Time prompt after UMP/ATT.
+    await AdConsentService.instance.initialize();
     try {
       await _invokeMap("requestAuthorization");
     } catch (_) {}
@@ -404,6 +407,7 @@ class IosScreenTimeAppLockService extends AppLockService {
       return _selectionFailure("Screen Time setup isn't available.");
     }
 
+    await AdConsentService.instance.initialize();
     final Map<String, dynamic> auth;
     try {
       auth = await _invokeMap("requestAuthorization");

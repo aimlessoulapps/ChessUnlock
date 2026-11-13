@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:chessUnlock/services/ad_consent_service.dart';
 import 'package:chessUnlock/services/app_lock/app_lock_service.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -12,6 +15,37 @@ void main() {
     premiumActive: true,
     premiumValidUntilMs: 456,
   );
+
+  for (final openPicker in [false, true]) {
+    test('iOS Screen Time waits for consent; picker=$openPicker', () async {
+      const channel = MethodChannel('test.screen_time.consent');
+      final consent = _PendingAdConsent();
+      final previous = AdConsentService.instance;
+      AdConsentService.instance = consent;
+      final calls = <String>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        calls.add(call.method);
+        return {'available': true, 'status': 'approved', 'completed': true};
+      });
+      addTearDown(() {
+        AdConsentService.instance = previous;
+        consent.dispose();
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null);
+      });
+      final service = IosScreenTimeAppLockService(channel: channel);
+      final pending = openPicker
+          ? service.openNativeAppPicker()
+          : service.requestInitialPermissionSetup();
+      await consent.started.future;
+      expect(calls, ['isAvailable']);
+      consent.completed.complete();
+      await pending;
+      expect(calls, contains('requestAuthorization'));
+      expect(calls.contains('presentFamilyActivityPicker'), openPicker);
+    });
+  }
 
   test('iOS receives verified entitlement expiry with unlock state', () async {
     const channel = MethodChannel('test.screen_time');
@@ -63,4 +97,15 @@ void main() {
       await expectLater(action(), throwsA(isA<PlatformException>()));
     }
   });
+}
+
+class _PendingAdConsent extends AdConsentService {
+  final started = Completer<void>();
+  final completed = Completer<void>();
+
+  @override
+  Future<void> initialize() {
+    if (!started.isCompleted) started.complete();
+    return completed.future;
+  }
 }

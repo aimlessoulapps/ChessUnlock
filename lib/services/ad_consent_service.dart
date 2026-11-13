@@ -1,11 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 
 /// A single launch-time UMP update gates every ad placement. Never store our
 /// own consent bool: UMP owns consent persistence and offline eligibility.
 class AdConsentService extends ChangeNotifier {
+  static const _trackingChannel = MethodChannel('chessunlock/ad_tracking');
+
   AdConsentService({
     ConsentInformation? information,
     Future<void> Function()? showRequiredForm,
@@ -59,7 +62,12 @@ class AdConsentService extends ChangeNotifier {
           if (!updated.isCompleted) updated.complete(false);
         },
       );
-      if (await updated.future) await _showRequiredForm();
+      if (await updated.future) {
+        if (_isIOS) {
+          await _trackingChannel.invokeMethod<void>('waitUntilActive');
+        }
+        await _showRequiredForm();
+      }
     } catch (_) {
       // An update/form failure must not block app startup. UMP may still
       // authorize ads from a previous session; ask it rather than guessing.
@@ -74,6 +82,14 @@ class AdConsentService extends ChangeNotifier {
           await _information.getPrivacyOptionsRequirementStatus() ==
               PrivacyOptionsRequirementStatus.required;
       allowed = await _information.canRequestAds();
+      if (allowed && _isIOS) {
+        // UMP may already have shown ATT. Native code requests only if still
+        // undetermined, after the app is active and the UMP form has dismissed.
+        // Denied/restricted are valid outcomes: Google omits IDFA and can still
+        // serve eligible nontracking ads. ATT is NOT an ad-eligibility boolean.
+        await _trackingChannel
+            .invokeMethod<int>('requestTrackingAuthorization');
+      }
       if (allowed && !_adsInitialized) {
         await _initializeAds();
         _adsInitialized = true;
@@ -92,6 +108,7 @@ class AdConsentService extends ChangeNotifier {
     notifyListeners();
     var succeeded = true;
     try {
+      if (_isIOS) await _trackingChannel.invokeMethod<void>('waitUntilActive');
       await _showPrivacyForm();
     } catch (_) {
       succeeded = false;
@@ -101,4 +118,6 @@ class AdConsentService extends ChangeNotifier {
     }
     return succeeded;
   }
+
+  bool get _isIOS => !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
 }

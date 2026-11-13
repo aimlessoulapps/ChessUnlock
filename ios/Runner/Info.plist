@@ -26,6 +26,8 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>GADApplicationIdentifier</key>
 	<string>ca-app-pub-8108010703558411~2914429799</string>
+	<key>NSUserTrackingUsageDescription</key>
+	<string>Your permission allows our advertising partners to use activity across other companies' apps and websites to show you more relevant ads and measure their effectiveness.</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>SKAdNetworkItems</key>
