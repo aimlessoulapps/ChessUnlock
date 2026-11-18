@@ -19,7 +19,7 @@ void main() {
     consent.dispose();
   });
 
-  testWidgets('free banner waits for consent without changing its slot',
+  testWidgets('native waits for consent and collapses until loaded',
       (tester) async {
     consent.allowed = false;
     final calls = <String>[];
@@ -35,28 +35,28 @@ void main() {
     await tester.pumpWidget(const MaterialApp(
         home: Scaffold(
             body: ScreenAdHeader(
-      title: 'Home',
+      title: 'Puzzle',
       active: true,
-      screenName: 'home',
+      screenName: 'puzzle',
     ))));
     await tester.pump();
-    final before = tester.getRect(find.byType(BannerAdSlot));
-    expect(calls.where((call) => call == 'loadBannerAd'), isEmpty);
+    final before = tester.getRect(find.byType(NativeAdSlot));
+    expect(calls.where((call) => call == 'loadNativeAd'), isEmpty);
     consent.setAllowed(true);
     await tester.pump();
-    expect(calls, contains('loadBannerAd'));
-    expect(tester.getRect(find.byType(BannerAdSlot)), before);
+    expect(calls, contains('loadNativeAd'));
+    expect(tester.getRect(find.byType(NativeAdSlot)), before);
     calls.clear();
     consent.setAllowed(false);
     await tester.pump(const Duration(minutes: 2));
-    expect(calls.where((call) => call == 'loadBannerAd'), isEmpty);
+    expect(calls.where((call) => call == 'loadNativeAd'), isEmpty);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  for (final screen in ['home', 'puzzle', 'settings']) {
+  for (final screen in ['puzzle']) {
     for (final size in [const Size(320, 568), const Size(430, 932)]) {
       testWidgets(
-          '$screen reserves identical space through Premium transitions at $size',
+          '$screen collapses unloaded ads through Premium transitions at $size',
           (tester) async {
         tester.view.physicalSize = size;
         tester.view.devicePixelRatio = 1;
@@ -95,15 +95,15 @@ void main() {
           position ??= current;
           expect(current, position);
           if (premium) {
-            expect(find.byType(BannerAdSlot), findsNothing);
+            expect(find.byType(NativeAdSlot), findsNothing);
             expect(
-                calls.where((call) => call.contains('loadBannerAd')), isEmpty);
+                calls.where((call) => call.contains('loadNativeAd')), isEmpty);
             await tester.pump(const Duration(minutes: 6));
             expect(
-                calls.where((call) => call.contains('loadBannerAd')), isEmpty);
+                calls.where((call) => call.contains('loadNativeAd')), isEmpty);
           } else {
-            expect(find.byType(BannerAdSlot), findsOneWidget);
-            expect(calls, contains('loadBannerAd'));
+            expect(find.byType(NativeAdSlot), findsOneWidget);
+            expect(calls, contains('loadNativeAd'));
           }
           expect(tester.takeException(), isNull);
         }
@@ -111,22 +111,42 @@ void main() {
       });
     }
   }
+  for (final size in [const Size(320, 568), const Size(430, 932)]) {
+    testWidgets('Settings header has no ad for free users at $size',
+        (tester) async {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(const MaterialApp(
+          home: Scaffold(
+              body: ScreenAdHeader(
+                  title: 'Settings',
+                  active: true,
+                  adsDisabled: false,
+                  screenName: 'settings'))));
+      expect(find.text('Settings'), findsOneWidget);
+      expect(find.byType(NativeAdSlot), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets("premium hides banner ad slots", (tester) async {
     await tester.pumpWidget(
       const MaterialApp(
         home: Scaffold(
           body: ScreenAdHeader(
-            title: "Settings",
+            title: "Puzzle",
             active: true,
             adsDisabled: true,
-            screenName: "settings",
+            screenName: "puzzle",
           ),
         ),
       ),
     );
 
-    expect(find.text("Settings"), findsOneWidget);
-    expect(find.byType(BannerAdSlot), findsNothing);
+    expect(find.text("Puzzle"), findsOneWidget);
+    expect(find.byType(NativeAdSlot), findsNothing);
   });
 
   testWidgets("free mode keeps banner ad slots", (tester) async {
@@ -134,16 +154,16 @@ void main() {
       const MaterialApp(
         home: Scaffold(
           body: ScreenAdHeader(
-            title: "Settings",
+            title: "Puzzle",
             active: false,
             adsDisabled: false,
-            screenName: "settings",
+            screenName: "puzzle",
           ),
         ),
       ),
     );
 
-    expect(find.text("Settings"), findsOneWidget);
-    expect(find.byType(BannerAdSlot), findsOneWidget);
+    expect(find.text("Puzzle"), findsOneWidget);
+    expect(find.byType(NativeAdSlot), findsOneWidget);
   });
 }

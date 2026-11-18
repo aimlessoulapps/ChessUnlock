@@ -84,8 +84,8 @@ object PrefBridge {
         val preservingIndefiniteUnlock = getIndefUnlock(ctx) && indefUnlock
         require(lockEnabled || premiumValid || manualLockPause ||
             (indefUnlock && preservingIndefiniteUnlock) ||
-            (!indefUnlock && (preservingTimedUnlock || unlockUntilMs <= now + 45 * 60_000L))) {
-            "Free unlocks cannot exceed 45 minutes"
+            (!indefUnlock && (preservingTimedUnlock || unlockUntilMs <= now + 30 * 60_000L))) {
+            "Free unlocks cannot exceed 30 minutes"
         }
         val sanitizedLockedPackages = sanitizeLockedPackages(ctx, lockedPackages)
         watcherPrefs(ctx).edit()

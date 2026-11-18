@@ -309,7 +309,7 @@ final class ScreenTimeBridge: NSObject {
                                           premiumValid: premiumValid) else {
         result(operationPayload(success: false, action: "syncLockState",
                                 code: "unlockDurationNotAllowed",
-                                errorMessage: "Free unlocks cannot exceed 45 minutes."))
+                                errorMessage: "Free unlocks cannot exceed 30 minutes."))
         return
       }
       sharedDefaults.set(manualLockPause, forKey: "ios.screenTime.manualLockPause.v1")
@@ -429,7 +429,7 @@ final class ScreenTimeBridge: NSObject {
                           premiumValid: premiumValid) else {
         result(operationPayload(success: false, action: "unlockFor",
                                 code: "unlockDurationNotAllowed",
-                                errorMessage: "Free unlocks cannot exceed 45 minutes."))
+                                errorMessage: "Free unlocks cannot exceed 30 minutes."))
         return
       }
       guard indefiniteUnlock || unlockUntilMs > currentTimeMs() else {
@@ -632,7 +632,7 @@ private extension ScreenTimeBridge {
     let now = currentTimeMs()
     let existing = Int64(sharedDefaults.integer(forKey: unlockUntilStoreKey))
     if !wasIndefinite && existing > now && untilMs == existing { return true }
-    return untilMs <= now + 45 * 60_000
+    return untilMs <= now + 30 * 60_000
   }
 
   func currentTimeMs() -> Int64 {

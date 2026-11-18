@@ -20,6 +20,9 @@ import 'services/analytics_service.dart';
 import 'services/crashlytics_service.dart';
 import 'services/emergency_unlock_service.dart';
 import 'services/ad_consent_service.dart';
+import 'services/ad_units.dart';
+import 'services/practice_interstitial.dart';
+import 'services/native_ad_cache.dart';
 import 'services/lock_state_controller.dart';
 import 'services/premium_access_service.dart';
 import 'services/puzzle_queue_service.dart';
@@ -367,6 +370,9 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   bool _solved = false;
   bool _unlockAvailable = false;
   bool _extraPuzzleMode = false;
+  late final PracticeInterstitial _practiceInterstitial;
+  Future<void>? _practiceCompletion;
+  bool _practiceTransitionBusy = false;
   bool _puzzleSolvedChoiceShown = false;
   bool _puzzleSolvedDialogShowing = false;
   bool _needsFreshPuzzleOnNextOpen = false;
@@ -423,20 +429,6 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   // =========================
   // Hint + Skip ads
   // =========================
-  static const String _androidDefaultRewardedAdUnitId =
-      "ca-app-pub-8108010703558411/1847579539";
-  static const String _iosDefaultRewardedAdUnitId =
-      "ca-app-pub-8108010703558411/5800977815";
-  static const String _configuredRewardedAdUnitId = String.fromEnvironment(
-    "CHESSUNLOCK_REWARDED_AD_UNIT_ID",
-  );
-  static const String _configuredAndroidRewardedAdUnitId =
-      String.fromEnvironment(
-    "CHESSUNLOCK_ANDROID_REWARDED_AD_UNIT_ID",
-  );
-  static const String _configuredIosRewardedAdUnitId = String.fromEnvironment(
-    "CHESSUNLOCK_IOS_REWARDED_AD_UNIT_ID",
-  );
   static const Duration _rewardedInitialRetryDelay = Duration(seconds: 30);
   static const Duration _rewardedMaxRetryDelay = Duration(minutes: 5);
 
@@ -468,15 +460,6 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
   // Tabs
   late int _tab; // 0 Home, 1 Puzzle, 2 Settings
-  static const List<String> _bannerScreenNames = [
-    "home",
-    "puzzle",
-    "settings",
-  ];
-  static const int _bannerPrewarmBaseDelaySeconds = 2;
-  static const int _bannerPrewarmStepDelaySeconds = 3;
-  final List<bool> _bannerPrewarmEnabled = List<bool>.filled(3, false);
-  final List<Timer?> _bannerPrewarmTimers = List<Timer?>.filled(3, null);
 
   // Icons cache
   Map<String, Uint8List> _iconsByPkg = {};
@@ -515,6 +498,12 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
           !kIsWeb && defaultTargetPlatform == TargetPlatform.android,
     );
     _appLock = createAppLockService();
+    _practiceInterstitial = PracticeInterstitial(_prefsFuture,
+        allowed: () =>
+            mounted &&
+            _premiumStatusReady &&
+            !_isPremium &&
+            AdConsentService.instance.canRequestAds);
     AdConsentService.instance.addListener(_onAdConsentChanged);
     _premiumAccess.addListener(_onPremiumStateChanged);
     _emergencyUnlock.addListener(_onEmergencyUnlockStateChanged);
@@ -570,79 +559,18 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
     // ✅ Show a puzzle instantly if queue has one, otherwise cached, otherwise network.
     await puzzleLoad;
-    _scheduleDeferredBannerPrewarm();
     _scheduleDeferredLockedIconPrefetch();
-  }
-
-  void _scheduleDeferredBannerPrewarm() {
-    for (var i = 0; i < _bannerPrewarmTimers.length; i++) {
-      _bannerPrewarmTimers[i]?.cancel();
-      _bannerPrewarmTimers[i] = null;
-    }
-
-    var prewarmOrder = 0;
-    for (var i = 0; i < _bannerPrewarmEnabled.length; i++) {
-      if (i == _tab || _bannerPrewarmEnabled[i]) continue;
-
-      final delaySeconds = _bannerPrewarmBaseDelaySeconds +
-          (_bannerPrewarmStepDelaySeconds * prewarmOrder);
-      final delay = Duration(seconds: delaySeconds);
-      final screenName = _bannerScreenNames[i];
-      debugPrint(
-        "[ads][banner][prewarm] deferred inactive banner prewarm scheduled; "
-        "screen=$screenName delay=${delay.inSeconds}s",
-      );
-      _bannerPrewarmTimers[i] = Timer(delay, () => _enableBannerPrewarm(i));
-      prewarmOrder++;
-    }
-  }
-
-  void _enableBannerPrewarm(int tab) {
-    _bannerPrewarmTimers[tab] = null;
-    if (!mounted) return;
-    final lifecycleState = WidgetsBinding.instance.lifecycleState;
-    if (lifecycleState != null && lifecycleState != AppLifecycleState.resumed) {
-      debugPrint(
-        "[ads][banner][prewarm] inactive banner prewarm delayed; "
-        "screen=${_bannerScreenNames[tab]} lifecycleState=$lifecycleState",
-      );
-      _bannerPrewarmTimers[tab] = Timer(
-        const Duration(seconds: _bannerPrewarmStepDelaySeconds),
-        () => _enableBannerPrewarm(tab),
-      );
-      return;
-    }
-    if (_bannerPrewarmEnabled[tab]) {
-      debugPrint(
-        "[ads][banner][prewarm] inactive banner prewarm skipped; "
-        "screen=${_bannerScreenNames[tab]} already enabled",
-      );
-      return;
-    }
-
-    debugPrint(
-      "[ads][banner][prewarm] inactive banner prewarm started; "
-      "screen=${_bannerScreenNames[tab]} active=${_tab == tab}",
-    );
-    setState(() => _bannerPrewarmEnabled[tab] = true);
-  }
-
-  void _cancelBannerPrewarmTimers() {
-    for (var i = 0; i < _bannerPrewarmTimers.length; i++) {
-      _bannerPrewarmTimers[i]?.cancel();
-      _bannerPrewarmTimers[i] = null;
-    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _practiceInterstitial.dispose();
     _ticker?.cancel();
     _autoCheckTimer?.cancel();
     _checkTimeout?.cancel();
     _hintBlinkTimer?.cancel();
     _resetPremiumPuzzleActionState(notify: false);
-    _cancelBannerPrewarmTimers();
     _disposeRewardedAd();
     _cancelRewardedRetryTimer();
     AdConsentService.instance.removeListener(_onAdConsentChanged);
@@ -702,6 +630,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     await _premiumAccess.refreshPremiumStatus();
     if (!mounted) return;
     _premiumStatusReady = true;
+    _practiceInterstitial.sync();
     await _premiumAccess.loadUnlockMinutes();
     _clampDifficultyForFreeUsers();
     await _emergencyUnlock.refreshUsage();
@@ -713,6 +642,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
   void _onPremiumStateChanged() {
     if (!mounted) return;
+    _practiceInterstitial.sync();
     final validUntil = _premiumAccess.premiumValidUntilMs;
     if (_lastPremiumState == _isPremium) {
       if (_lastPremiumValidUntilMs != validUntil) {
@@ -737,6 +667,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
   void _onAdConsentChanged() {
     if (!mounted) return;
+    _practiceInterstitial.sync();
     if (AdConsentService.instance.canRequestAds &&
         _premiumStatusReady &&
         !_isPremium) {
@@ -2068,6 +1999,9 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     _resetPremiumPuzzleActionState(notify: false);
     if (!wasSolved) {
       if (_extraPuzzleMode) {
+        if (recordStats) {
+          _practiceCompletion = _practiceInterstitial.recordCompletion();
+        }
         AppCrashlytics.logPuzzleSolved(
           puzzleType: "practice_puzzle",
           difficulty: _effectiveDifficulty,
@@ -2095,7 +2029,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
 
     if (_extraPuzzleMode) {
       _snack("Solved. Loading next puzzle…");
-      unawaited(_loadExtraPuzzle());
+      unawaited(_advanceCompletedPractice());
       return;
     }
 
@@ -2117,6 +2051,40 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     }
     _puzzleSolvedChoiceShown = true;
     unawaited(_showPuzzleSolvedDialog());
+  }
+
+  Future<void> _advanceCompletedPractice() async {
+    if (_practiceTransitionBusy) return;
+    _practiceTransitionBusy = true;
+    final completedPuzzle = _puzzle;
+    bool sameTransition() =>
+        mounted &&
+        _tab == 1 &&
+        _extraPuzzleMode &&
+        _solved &&
+        identical(_puzzle, completedPuzzle);
+    try {
+      try {
+        await _practiceCompletion;
+      } catch (_) {/* Storage failures must not block practice. */}
+      _practiceCompletion = null;
+      try {
+        await _practiceInterstitial.atTransition(
+            safe: () =>
+                sameTransition() &&
+                !_lockEnabled &&
+                !_homeEmergencyUnlockBusy &&
+                _homeEmergencyUnlockActiveRemaining <= Duration.zero &&
+                !_rewardedAdShowing &&
+                !_rewardedActionInProgress &&
+                !_rewardedDialogShowing &&
+                !_puzzleSolvedDialogShowing &&
+                (ModalRoute.of(context)?.isCurrent ?? false));
+      } catch (_) {/* Ads must never block the next puzzle. */}
+      if (sameTransition()) await _loadExtraPuzzle();
+    } finally {
+      _practiceTransitionBusy = false;
+    }
   }
 
   Future<void> _loadExtraPuzzle() async {
@@ -2178,54 +2146,10 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   // =========================
   // Hint/Skip ads
   // =========================
-  String get _rewardedAdUnitId {
-    if (defaultTargetPlatform == TargetPlatform.iOS) {
-      final configuredIos = _configuredIosRewardedAdUnitId.trim();
-      if (configuredIos.isNotEmpty) {
-        return configuredIos;
-      }
+  String get _rewardedAdUnitId => AdUnits.rewarded;
 
-      final configured = _configuredRewardedAdUnitId.trim();
-      if (configured.isNotEmpty) {
-        return configured;
-      }
-
-      return _iosDefaultRewardedAdUnitId;
-    }
-
-    final configuredAndroid = _configuredAndroidRewardedAdUnitId.trim();
-    if (configuredAndroid.isNotEmpty) {
-      return configuredAndroid;
-    }
-
-    final configured = _configuredRewardedAdUnitId.trim();
-    if (configured.isNotEmpty) {
-      return configured;
-    }
-
-    return _androidDefaultRewardedAdUnitId;
-  }
-
-  String get _rewardedAdUnitSource {
-    if (defaultTargetPlatform == TargetPlatform.iOS) {
-      if (_configuredIosRewardedAdUnitId.trim().isNotEmpty) {
-        return "ios-dart-define";
-      }
-      if (_configuredRewardedAdUnitId.trim().isNotEmpty) {
-        return "shared-dart-define";
-      }
-      return "ios-default";
-    }
-
-    if (defaultTargetPlatform == TargetPlatform.android &&
-        _configuredAndroidRewardedAdUnitId.trim().isNotEmpty) {
-      return "android-dart-define";
-    }
-    if (_configuredRewardedAdUnitId.trim().isNotEmpty) {
-      return "shared-dart-define";
-    }
-    return "android-default";
-  }
+  String get _rewardedAdUnitSource =>
+      AdUnits.testAds ? "google-test-build-mode" : "production-build-mode";
 
   String get _rewardedPlatformLabel {
     if (defaultTargetPlatform == TargetPlatform.iOS) return "ios";
@@ -2976,17 +2900,6 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
       "source=$_rewardedAdUnitSource release=$kReleaseMode "
       "adUnitId=$_rewardedAdUnitId",
     );
-
-    if (defaultTargetPlatform == TargetPlatform.iOS &&
-        kReleaseMode &&
-        _configuredIosRewardedAdUnitId.trim().isEmpty &&
-        _configuredRewardedAdUnitId.trim().isEmpty) {
-      _debugRewarded(
-        "release iOS is using the default iOS rewarded ad unit id. "
-        "Pass "
-        "CHESSUNLOCK_IOS_REWARDED_AD_UNIT_ID.",
-      );
-    }
   }
 
   String _rewardedActionLogName(_RewardedPuzzleAction action) {
@@ -3044,12 +2957,6 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
   }) {
     final AdError? error = loadError ?? showError;
     if (error == null) {
-      if (defaultTargetPlatform == TargetPlatform.iOS &&
-          kReleaseMode &&
-          _configuredIosRewardedAdUnitId.trim().isEmpty &&
-          _configuredRewardedAdUnitId.trim().isEmpty) {
-        return "Ad setup is incomplete for iOS.";
-      }
       return "Ad is not ready yet. Please try again in a moment.";
     }
 
@@ -3224,6 +3131,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     var selected = await _premiumAccess.loadUnlockMinutes();
     if (!mounted) return;
     var lastValidFreeSelection = min(selected, freeUnlockMinutes);
+    var openingDurationPaywall = false;
     final wheelController = FixedExtentScrollController(
       initialItem: options.indexOf(selected),
     );
@@ -3300,6 +3208,16 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
                       freeLimitMinutes: freeUnlockMinutes,
                       isPremium: _isPremium,
                       scrollController: wheelController,
+                      onLockedTap: () async {
+                        if (openingDurationPaywall) return;
+                        openingDurationPaywall = true;
+                        try {
+                          await _openPremiumPaywall();
+                        } finally {
+                          openingDurationPaywall = false;
+                          if (ctx.mounted) setSheetState(() {});
+                        }
+                      },
                       onChanged: (minutes) {
                         selected = minutes;
                         if (minutes <= freeUnlockMinutes) {
@@ -3717,12 +3635,14 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
     return Scaffold(
       backgroundColor: cs.surface,
       body: SafeArea(
+          child: NativeAdScope(
+        enabled: _premiumStatusReady && !_isPremium,
         child: IndexedStack(
           index: _tab,
           children: [
             HomeTab(
               active: _tab == 0,
-              prewarmBanner: _bannerPrewarmEnabled[0],
+              prewarmBanner: false,
               adsDisabled: !_premiumStatusReady || _isPremium,
               lockEnabled: _lockEnabled,
               indefiniteUnlock: _indefiniteUnlock,
@@ -3764,7 +3684,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
             ),
             PuzzleTab(
               active: _tab == 1,
-              prewarmBanner: _bannerPrewarmEnabled[1],
+              prewarmBanner: false,
               adsDisabled: !_premiumStatusReady || _isPremium,
               puzzle: _puzzle,
               loading: _loadingPuzzle,
@@ -3792,7 +3712,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
             ),
             SettingsTab(
               active: _tab == 2,
-              prewarmBanner: _bannerPrewarmEnabled[2],
+              prewarmBanner: false,
               adsDisabled: !_premiumStatusReady || _isPremium,
               lockEnabled: _lockEnabled,
               indefiniteUnlock: _indefiniteUnlock,
@@ -3814,7 +3734,7 @@ class _ChessUnlockShellState extends State<ChessUnlockShell>
             ),
           ],
         ),
-      ),
+      )),
       bottomNavigationBar: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -3846,12 +3766,14 @@ class _UnlockDurationWheelPicker extends StatelessWidget {
     required this.isPremium,
     required this.scrollController,
     required this.onChanged,
+    required this.onLockedTap,
   });
 
   final int freeLimitMinutes;
   final bool isPremium;
   final FixedExtentScrollController scrollController;
   final ValueChanged<int> onChanged;
+  final VoidCallback onLockedTap;
 
   @override
   Widget build(BuildContext context) {
@@ -3889,33 +3811,40 @@ class _UnlockDurationWheelPicker extends StatelessWidget {
               fontWeight: FontWeight.w600,
             );
 
-            return Center(
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    PremiumAccessService.formatUnlockMinutes(minutes),
-                    style: textStyle,
+            return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: locked ? onLockedTap : null,
+                child: Center(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        PremiumAccessService.formatUnlockMinutes(minutes),
+                        style: textStyle,
+                      ),
+                      if (locked) ...[
+                        const SizedBox(width: 8),
+                        Icon(
+                          Icons.lock_rounded,
+                          size: 16,
+                          color: cs.onSurfaceVariant.withValues(alpha: 0.55),
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          "Premium",
+                          style: Theme.of(context)
+                              .textTheme
+                              .labelMedium
+                              ?.copyWith(
+                                color:
+                                    cs.onSurfaceVariant.withValues(alpha: 0.62),
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                      ],
+                    ],
                   ),
-                  if (locked) ...[
-                    const SizedBox(width: 8),
-                    Icon(
-                      Icons.lock_rounded,
-                      size: 16,
-                      color: cs.onSurfaceVariant.withValues(alpha: 0.55),
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      "Premium",
-                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                            color: cs.onSurfaceVariant.withValues(alpha: 0.62),
-                            fontWeight: FontWeight.w700,
-                          ),
-                    ),
-                  ],
-                ],
-              ),
-            );
+                ));
           },
         ),
       ),

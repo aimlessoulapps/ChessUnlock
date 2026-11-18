@@ -120,6 +120,7 @@ void main() {
   Future<void> launch(WidgetTester tester, TargetPlatform platform,
       {bool premium = false,
       int? savedMinutes,
+      int? activeUntil,
       PuzzleQueueService? queue}) async {
     debugDefaultTargetPlatformOverride = platform;
     client.info = customer(premium: premium);
@@ -129,6 +130,11 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     SharedPreferences.setMockInitialValues({
       'onboardingComplete': true,
+      if (activeUntil != null) ...{
+        'lockEnabled': false,
+        'indefUnlock': false,
+        'unlockUntilMs': activeUntil,
+      },
       'lockedPackages': ['test.locked.app'],
       if (savedMinutes != null)
         PremiumAccessService.unlockDurationPrefsKey: savedMinutes,
@@ -226,8 +232,8 @@ void main() {
           expect(positions(), baseline);
           if (premium) {
             expect(
-                find.byType(BannerAdSlot, skipOffstage: false), findsNothing);
-            expect(adCalls.where((call) => call == 'loadBannerAd'), isEmpty);
+                find.byType(NativeAdSlot, skipOffstage: false), findsNothing);
+            expect(adCalls.where((call) => call == 'loadNativeAd'), isEmpty);
           }
           expect(tester.takeException(), isNull);
         }
@@ -250,7 +256,7 @@ void main() {
     await pumpFrames(tester);
     expect(find.byType(CupertinoPicker), findsOneWidget);
     final wheel = tester.widget<CupertinoPicker>(find.byType(CupertinoPicker));
-    expect(wheel.childDelegate.estimatedChildCount, 6);
+    expect(wheel.childDelegate.estimatedChildCount, 8);
     expect(wheel.itemExtent, 42);
     expect(wheel.magnification, 1.08);
   }
@@ -269,17 +275,16 @@ void main() {
   }
 
   for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
-    testWidgets(
-        '$platform free wheel gates only Start and restores free choice',
+    testWidgets('$platform free wheel gates Start and restores free choice',
         (tester) async {
       await launch(tester, platform, savedMinutes: 60);
       await openWheel(tester);
       final wheel =
           tester.widget<CupertinoPicker>(find.byType(CupertinoPicker));
-      expect(wheel.scrollController!.selectedItem, 2);
+      expect(wheel.scrollController!.selectedItem, 3);
       expect(find.text('Premium unlocks up to 3 hours.'), findsOneWidget);
       final prefs = await SharedPreferences.getInstance();
-      for (final minutes in [60, 120, 180]) {
+      for (final minutes in [45, 60, 120, 180]) {
         await select(tester, minutes);
         expect(find.byType(PaywallScreen), findsNothing);
         await tester.tap(find.text('Start'));
@@ -289,16 +294,16 @@ void main() {
         await tester.ensureVisible(find.text('Not now'));
         await tester.tap(find.text('Not now'));
         await pumpFrames(tester);
-        expect(wheel.scrollController!.selectedItem, 2);
-        expect(prefs.getInt(PremiumAccessService.unlockDurationPrefsKey), 45);
+        expect(wheel.scrollController!.selectedItem, 3);
+        expect(prefs.getInt(PremiumAccessService.unlockDurationPrefsKey), 30);
       }
-      await select(tester, 45);
+      await select(tester, 30);
       await tester.tap(find.text('Start'));
       await pumpFrames(tester);
       final expiry = prefs.getInt('unlockUntilMs')!;
       expect(expiry - DateTime.now().millisecondsSinceEpoch,
-          closeTo(const Duration(minutes: 45).inMilliseconds, 5000));
-      expect(prefs.getInt(PremiumAccessService.unlockDurationPrefsKey), 45);
+          closeTo(const Duration(minutes: 30).inMilliseconds, 5000));
+      expect(prefs.getInt(PremiumAccessService.unlockDurationPrefsKey), 30);
       final syncName = platform == TargetPlatform.android
           ? 'syncWatcherState'
           : 'syncLockState';
@@ -311,7 +316,7 @@ void main() {
         expect(calls.where((c) => c.method == 'startWatcher'), isNotEmpty);
       } else {
         final unlock = calls.lastWhere((c) => c.method == 'unlockFor');
-        expect(unlock.arguments['durationMs'], 45 * 60 * 1000);
+        expect(unlock.arguments['durationMs'], 30 * 60 * 1000);
         expect(unlock.arguments['unlockUntilMs'], expiry);
       }
       final restored = LockStateController(Future.value(prefs));
@@ -321,7 +326,39 @@ void main() {
       await disposeApp(tester);
     });
 
-    for (final minutes in [15, 30]) {
+    testWidgets(
+        '$platform legacy 45-minute break survives migration and resume',
+        (tester) async {
+      final deadline = DateTime.now()
+          .add(const Duration(minutes: 45))
+          .millisecondsSinceEpoch;
+      await launch(tester, platform, savedMinutes: 45, activeUntil: deadline);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getInt(PremiumAccessService.unlockDurationPrefsKey), 30);
+      expect(prefs.getInt('unlockUntilMs'), deadline);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await pumpFrames(tester);
+      expect(prefs.getInt('unlockUntilMs'), deadline);
+      expect(prefs.getBool('lockEnabled'), false);
+      await disposeApp(tester);
+    });
+
+    testWidgets('$platform tapping locked 45 minutes opens paywall',
+        (tester) async {
+      await launch(tester, platform, savedMinutes: 45);
+      await openWheel(tester);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getInt(PremiumAccessService.unlockDurationPrefsKey), 30);
+      await select(tester, 45);
+      await tester.tap(find.text('45 min'));
+      await pumpFrames(tester);
+      expect(find.byType(PaywallScreen), findsOneWidget);
+      expect(prefs.getInt('unlockUntilMs') ?? 0, 0);
+      await disposeApp(tester);
+    });
+
+    for (final minutes in [5, 10, 15, 30]) {
       testWidgets('$platform free accepts $minutes minutes', (tester) async {
         await launch(tester, platform);
         await openWheel(tester);
@@ -408,7 +445,7 @@ void main() {
       expect(find.byType(PaywallScreen), findsOneWidget);
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.getInt('unlockUntilMs') ?? 0, 0);
-      expect(prefs.getInt(PremiumAccessService.unlockDurationPrefsKey), 45);
+      expect(prefs.getInt(PremiumAccessService.unlockDurationPrefsKey), 30);
       await disposeApp(tester);
     });
 
@@ -425,7 +462,7 @@ void main() {
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await pumpFrames(tester);
       expect(prefs.getInt('unlockUntilMs'), deadline);
-      expect(prefs.getInt(PremiumAccessService.unlockDurationPrefsKey), 45);
+      expect(prefs.getInt(PremiumAccessService.unlockDurationPrefsKey), 30);
       await disposeApp(tester);
     });
 
@@ -435,7 +472,7 @@ void main() {
         await openWheel(tester);
         final wheel =
             tester.widget<CupertinoPicker>(find.byType(CupertinoPicker));
-        expect(wheel.scrollController!.selectedItem, 0);
+        expect(wheel.scrollController!.selectedItem, 2);
         await select(tester, minutes);
         await tester.tap(find.text('Start'));
         await pumpFrames(tester);

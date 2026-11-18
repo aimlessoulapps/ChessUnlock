@@ -78,8 +78,15 @@ class MainActivity : FlutterActivity() {
         if (!ForegroundAppWatcherService.start(this, receiver)) complete(false)
     }
 
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        io.flutter.plugins.googlemobileads.GoogleMobileAdsPlugin.unregisterNativeAdFactory(flutterEngine, "chessunlockNative")
+        super.cleanUpFlutterEngine(flutterEngine)
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        io.flutter.plugins.googlemobileads.GoogleMobileAdsPlugin.registerNativeAdFactory(
+            flutterEngine, "chessunlockNative", ChessNativeAdFactory(this))
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {

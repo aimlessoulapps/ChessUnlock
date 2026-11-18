@@ -13,11 +13,13 @@ class PremiumAccessService extends ChangeNotifier {
 
   final Future<SharedPreferences> _prefsFuture;
 
-  static const freeUnlockMinutes = 45;
+  static const freeUnlockMinutes = 30;
   static const premiumUnlockMinutes = 180;
   static const defaultUnlockMinutes = 15;
   static const unlockDurationPrefsKey = "unlockDurationMinutes";
   static const unlockMinuteOptions = <int>[
+    5,
+    10,
     15,
     30,
     45,
@@ -32,6 +34,12 @@ class PremiumAccessService extends ChangeNotifier {
   static const offeringIdentifier =
       String.fromEnvironment('REVENUECAT_OFFERING_ID');
   bool _isPremium = false;
+  bool _localOverride = false;
+  Future<void>? _localInitialization;
+  static const _overrideKey = 'premium.reviewerOverride.v1';
+  bool get supportsRedeemCode =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+  bool get hasLocalOverride => supportsRedeemCode && _localOverride;
   bool _configured = false;
   bool _disposed = false;
   bool busy = false;
@@ -76,12 +84,58 @@ class PremiumAccessService extends ChangeNotifier {
     return false;
   }
 
-  bool get isPremium =>
+  bool get hasSubscriptionPremium =>
       _isPremium &&
       (_validUntil == null || DateTime.now().isBefore(_validUntil!));
-  int get premiumValidUntilMs =>
-      isPremium ? _validUntil!.millisecondsSinceEpoch : 0;
+  bool get isPremium => hasLocalOverride || hasSubscriptionPremium;
+  // The native Android watcher also needs a persistent validity deadline.
+  // Local access has no expiry; disabling it re-syncs the subscription deadline.
+  int get premiumValidUntilMs => hasLocalOverride
+      ? 253402300799000
+      : hasSubscriptionPremium
+          ? _validUntil!.millisecondsSinceEpoch
+          : 0;
   String? get monthlyPrice => monthlyPackage?.storeProduct.priceString;
+
+  Future<void> _loadLocalOverride() => _localInitialization ??= () async {
+        if (!supportsRedeemCode) return;
+        final prefs = await _prefsFuture;
+        _localOverride = prefs.getBool(_overrideKey) ?? false;
+        if (!_disposed) notifyListeners();
+      }();
+
+  Future<String> redeemCode(String code) async {
+    if (!supportsRedeemCode) return 'Code redemption is unavailable.';
+    if (code.trim() != '8SNLQP-GDKJLE-686ST2-S494WB') {
+      return 'Incorrect access code. Please try again.';
+    }
+    return _saveLocalOverride(true);
+  }
+
+  Future<String> disableLocalOverride() => _saveLocalOverride(false);
+
+  Future<String> _saveLocalOverride(bool enabled) async {
+    if (!supportsRedeemCode) return 'Code redemption is unavailable.';
+    if (busy) return 'An operation is already in progress. Please try again.';
+    busy = true;
+    if (!_disposed) notifyListeners();
+    try {
+      await _loadLocalOverride();
+      final prefs = await _prefsFuture;
+      if (!await prefs.setBool(_overrideKey, enabled)) {
+        return 'Could not save access code settings. Please try again.';
+      }
+      _localOverride = enabled;
+      return enabled
+          ? 'Code redeemed. Premium is now active.'
+          : 'Code access disabled. Normal subscription access restored.';
+    } catch (_) {
+      return 'Could not save access code settings. Please try again.';
+    } finally {
+      busy = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
 
   bool canUnlockForMinutes(int minutes) =>
       unlockMinuteOptions.contains(minutes) &&
@@ -89,8 +143,8 @@ class PremiumAccessService extends ChangeNotifier {
 
   int normalizeUnlockMinutes(int? minutes) {
     final limit = isPremium ? premiumUnlockMinutes : freeUnlockMinutes;
-    final clamped =
-        (minutes ?? defaultUnlockMinutes).clamp(defaultUnlockMinutes, limit);
+    final clamped = (minutes ?? defaultUnlockMinutes)
+        .clamp(unlockMinuteOptions.first, limit);
     return unlockMinuteOptions.lastWhere((option) => option <= clamped);
   }
 
@@ -123,6 +177,7 @@ class PremiumAccessService extends ChangeNotifier {
   Future<void> initialize() => _initialization ??= _initialize();
 
   Future<void> _initialize() async {
+    await _loadLocalOverride();
     final prefs = await _prefsFuture;
     await prefs.remove('premium.enabled');
     await prefs.remove('premium.developerOverride');
@@ -247,7 +302,7 @@ class PremiumAccessService extends ChangeNotifier {
           : await _client.purchase(monthlyPackage!);
       _applyCustomerInfo(info);
       // Purchase/restore CustomerInfo is authoritative; the SDK also updates its cache.
-      return isPremium
+      return hasSubscriptionPremium
           ? (restore ? 'Premium purchases restored.' : 'Premium is now active.')
           : (restore
               ? 'No active Premium subscription was found.'

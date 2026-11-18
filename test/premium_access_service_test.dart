@@ -62,32 +62,35 @@ void main() {
     });
   }
 
-  test('six options, defaults, permissions and saved duration migration',
+  test('eight options, defaults, permissions and saved duration migration',
       () async {
     await service.refreshPremiumStatus();
     final prefs = await SharedPreferences.getInstance();
     expect(service.isPremium, isFalse);
     expect(prefs.containsKey('premium.enabled'), isFalse);
     expect(prefs.containsKey('premium.developerOverride'), isFalse);
-    expect(
-        PremiumAccessService.unlockMinuteOptions, [15, 30, 45, 60, 120, 180]);
+    expect(PremiumAccessService.unlockMinuteOptions,
+        [5, 10, 15, 30, 45, 60, 120, 180]);
     expect(await service.loadUnlockMinutes(), 15);
     for (final minutes in PremiumAccessService.unlockMinuteOptions) {
-      expect(service.canUnlockForMinutes(minutes), minutes <= 45);
+      expect(service.canUnlockForMinutes(minutes), minutes <= 30);
     }
-    for (final minutes in [60, 120, 180]) {
+    for (final minutes in [45, 60, 120, 180]) {
       await expectLater(
           service.saveUnlockMinutes(minutes), throwsArgumentError);
     }
     for (final entry in {
-      0: 15,
+      0: 5,
+      5: 5,
+      10: 10,
+      45: 30,
       29: 15,
-      59: 45,
-      60: 45,
-      75: 45,
-      105: 45,
-      165: 45,
-      999: 45
+      59: 30,
+      60: 30,
+      75: 30,
+      105: 30,
+      165: 30,
+      999: 30
     }.entries) {
       await prefs.setInt(
           PremiumAccessService.unlockDurationPrefsKey, entry.key);
@@ -119,10 +122,10 @@ void main() {
         DateTime.now().add(const Duration(hours: 3)).millisecondsSinceEpoch;
     await prefs.setInt('unlockUntilMs', deadline);
     client.emit(customer());
-    expect(await service.loadUnlockMinutes(), 45);
-    expect(prefs.getInt(PremiumAccessService.unlockDurationPrefsKey), 45);
+    expect(await service.loadUnlockMinutes(), 30);
+    expect(prefs.getInt(PremiumAccessService.unlockDurationPrefsKey), 30);
     expect(prefs.getInt('unlockUntilMs'), deadline);
-    for (final minutes in [60, 120, 180]) {
+    for (final minutes in [45, 60, 120, 180]) {
       expect(service.canUnlockForMinutes(minutes), isFalse);
     }
     client.emit(customer(premium: true));

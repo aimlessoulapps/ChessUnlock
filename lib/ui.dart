@@ -8,10 +8,11 @@ import 'package:advanced_chess_board/models/enums.dart';
 import 'package:flutter/foundation.dart' hide Uint8List;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:google_mobile_ads/google_mobile_ads.dart';
 
 import 'services/premium_access_service.dart';
-import 'services/ad_consent_service.dart';
+import 'services/ad_units.dart';
+import 'widgets/native_ad_slot.dart';
+export 'widgets/native_ad_slot.dart';
 import 'legal_links.dart';
 
 class ChessPuzzle {
@@ -155,401 +156,6 @@ class PremiumNavBar extends StatelessWidget {
   }
 }
 
-// =========================
-// Banner ad slot
-// =========================
-class BannerAdSlot extends StatefulWidget {
-  final double height;
-  final bool active;
-  final bool prewarm;
-  final String screenName;
-
-  const BannerAdSlot({
-    super.key,
-    this.height = 60,
-    this.active = true,
-    this.prewarm = false,
-    required this.screenName,
-  });
-
-  @override
-  State<BannerAdSlot> createState() => _BannerAdSlotState();
-}
-
-class _BannerAdSlotState extends State<BannerAdSlot>
-    with WidgetsBindingObserver {
-  static const _androidDefaultBannerAdUnitId =
-      "ca-app-pub-8108010703558411/9765598008";
-  static const _iosDefaultBannerAdUnitId =
-      "ca-app-pub-8108010703558411/5013979522";
-  static const _configuredBannerAdUnitId = String.fromEnvironment(
-    "CHESSUNLOCK_BANNER_AD_UNIT_ID",
-  );
-  static const _initialRetryDelay = Duration(seconds: 30);
-  static const _maxRetryDelay = Duration(minutes: 5);
-
-  BannerAd? _bannerAd;
-  BannerAd? _loadingBannerAd;
-  bool _loaded = false;
-  bool _loading = false;
-  bool _appResumed = true;
-  DateTime? _nextRetryAt;
-  Duration _retryDelay = _initialRetryDelay;
-  Timer? _retryTimer;
-  bool _loggedInvalidBannerAdUnitId = false;
-  bool _loggedBannerConfiguration = false;
-
-  bool get _adsSupported =>
-      !kIsWeb &&
-      (defaultTargetPlatform == TargetPlatform.android ||
-          defaultTargetPlatform == TargetPlatform.iOS);
-
-  String get _bannerAdUnitId {
-    final configured = _configuredBannerAdUnitId.trim();
-    if (configured.isNotEmpty) {
-      return configured;
-    }
-    if (defaultTargetPlatform == TargetPlatform.iOS) {
-      return _iosDefaultBannerAdUnitId;
-    }
-    return _androidDefaultBannerAdUnitId;
-  }
-
-  String get _bannerAdUnitSource {
-    if (_configuredBannerAdUnitId.trim().isNotEmpty) {
-      return "dart-define";
-    }
-    if (defaultTargetPlatform == TargetPlatform.iOS) {
-      return "ios-default";
-    }
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      return "android-default";
-    }
-    return "unsupported-default";
-  }
-
-  String get _bannerPlatformLabel {
-    if (kIsWeb) return "web";
-    return defaultTargetPlatform.name;
-  }
-
-  bool get _hasUsableBannerAdUnitId => _isValidAdUnitId(_bannerAdUnitId);
-
-  bool _isValidAdUnitId(String value) =>
-      value.startsWith("ca-app-pub-") && value.contains("/");
-
-  bool get _hasLoadedBanner => _loaded && _bannerAd != null;
-
-  bool get _canRequestBanner =>
-      AdConsentService.instance.canRequestAds &&
-      (widget.active || widget.prewarm);
-
-  @override
-  void initState() {
-    super.initState();
-    AdConsentService.instance.addListener(_onConsentChanged);
-    WidgetsBinding.instance.addObserver(this);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _debugBannerConfigurationIfNeeded();
-      _debugBannerVisibility("init");
-      if (_canRequestBanner) {
-        _ensureBannerAdLoaded(reason: "init");
-      }
-    });
-  }
-
-  void _onConsentChanged() {
-    if (!mounted) return;
-    if (!AdConsentService.instance.canRequestAds) {
-      _cancelRetryTimer();
-      _disposeLoadedBanner();
-      setState(() {});
-    } else {
-      _ensureBannerAdLoaded(reason: "consent_updated");
-    }
-  }
-
-  @override
-  void didUpdateWidget(covariant BannerAdSlot oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.active != widget.active ||
-        oldWidget.prewarm != widget.prewarm) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _debugBannerVisibility("request_state_changed");
-      });
-      if (_canRequestBanner) {
-        _ensureBannerAdLoaded(
-          reason: widget.active ? "screen_visible" : "deferred_prewarm",
-        );
-      } else {
-        _cancelRetryTimer();
-      }
-    }
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _appResumed = true;
-      _debugBanner("app resumed and banner checked");
-      if (_canRequestBanner) {
-        _ensureBannerAdLoaded(reason: "app_resumed");
-      }
-    } else {
-      _appResumed = false;
-      _debugBanner("app paused; banner timers cancelled");
-      _cancelRetryTimer();
-    }
-  }
-
-  void _ensureBannerAdLoaded({required String reason}) {
-    if (!_adsSupported || !_canRequestBanner || !_appResumed) return;
-
-    _debugBannerConfigurationIfNeeded();
-
-    if (!_hasUsableBannerAdUnitId) {
-      _debugInvalidBannerAdUnitId();
-      return;
-    }
-
-    if (_hasLoadedBanner) {
-      _debugBanner(
-        "banner load skipped because an ad is already loaded; "
-        "reason=$reason adUnitId=$_bannerAdUnitId",
-      );
-      return;
-    }
-
-    if (_loading) {
-      _debugBanner(
-        "banner load skipped because an ad is already loading; "
-        "reason=$reason adUnitId=$_bannerAdUnitId",
-      );
-      return;
-    }
-
-    final nextRetryAt = _nextRetryAt;
-    if (nextRetryAt != null) {
-      final remaining = nextRetryAt.difference(DateTime.now());
-      if (remaining > Duration.zero) {
-        _debugBanner(
-          "banner load skipped because retry backoff is active; "
-          "reason=$reason remaining=${remaining.inSeconds}s "
-          "adUnitId=$_bannerAdUnitId",
-        );
-        _scheduleRetry(remaining, reason: "retry_wait:$reason");
-        return;
-      }
-    }
-
-    _loadBannerAd(reason: reason);
-  }
-
-  void _scheduleRetry(Duration delay, {required String reason}) {
-    if (!_adsSupported ||
-        !_canRequestBanner ||
-        !_appResumed ||
-        _hasLoadedBanner ||
-        _loading) {
-      _debugBanner(
-        "banner retry skipped because an ad is already loaded/loading "
-        "or screen is inactive; reason=$reason adUnitId=$_bannerAdUnitId",
-      );
-      return;
-    }
-    if (_retryTimer != null) {
-      _debugBanner(
-        "banner retry skipped because retry is already scheduled; "
-        "reason=$reason adUnitId=$_bannerAdUnitId",
-      );
-      return;
-    }
-
-    _debugBanner(
-      "banner retry scheduled in ${delay.inSeconds}s; "
-      "reason=$reason adUnitId=$_bannerAdUnitId",
-    );
-    _retryTimer?.cancel();
-    _retryTimer = Timer(delay, () {
-      _retryTimer = null;
-      if (!mounted) return;
-      _ensureBannerAdLoaded(reason: "retry_timer");
-    });
-  }
-
-  void _cancelRetryTimer() {
-    _retryTimer?.cancel();
-    _retryTimer = null;
-  }
-
-  void _loadBannerAd({required String reason}) {
-    if (!_adsSupported ||
-        !_canRequestBanner ||
-        !_appResumed ||
-        _loading ||
-        _hasLoadedBanner) {
-      return;
-    }
-    if (!_hasUsableBannerAdUnitId) {
-      _debugInvalidBannerAdUnitId();
-      return;
-    }
-
-    _cancelRetryTimer();
-    _loading = true;
-    _nextRetryAt = null;
-
-    _debugBanner(
-      "banner load started; platform=$_bannerPlatformLabel "
-      "source=$_bannerAdUnitSource reason=$reason "
-      "adUnitId=$_bannerAdUnitId",
-    );
-    final ad = BannerAd(
-      adUnitId: _bannerAdUnitId,
-      request: const AdRequest(),
-      size: AdSize.banner,
-      listener: BannerAdListener(
-        onAdLoaded: (ad) {
-          if (_loadingBannerAd == ad) {
-            _loadingBannerAd = null;
-          }
-          if (!mounted || !AdConsentService.instance.canRequestAds) {
-            _loading = false;
-            ad.dispose();
-            return;
-          }
-          _debugBanner(
-            "banner loaded; platform=$_bannerPlatformLabel "
-            "source=$_bannerAdUnitSource adUnitId=$_bannerAdUnitId "
-            "responseInfo=${ad.responseInfo}",
-          );
-          setState(() {
-            _bannerAd = ad as BannerAd;
-            _loaded = true;
-            _loading = false;
-            _nextRetryAt = null;
-            _retryDelay = _initialRetryDelay;
-          });
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) _debugBannerVisibility("loaded");
-          });
-        },
-        onAdFailedToLoad: (ad, error) {
-          if (_loadingBannerAd == ad) {
-            _loadingBannerAd = null;
-          }
-          ad.dispose();
-          _debugBannerLoadError("banner failed", error);
-          if (!mounted) return;
-          setState(() {
-            _bannerAd = null;
-            _loaded = false;
-            _loading = false;
-          });
-          final delayBeforeNextAttempt = _retryDelay;
-          _nextRetryAt = DateTime.now().add(delayBeforeNextAttempt);
-          _scheduleRetry(delayBeforeNextAttempt, reason: "load_failed");
-          final nextRetrySeconds = _retryDelay.inSeconds * 2;
-          final cappedRetrySeconds = nextRetrySeconds > _maxRetryDelay.inSeconds
-              ? _maxRetryDelay.inSeconds
-              : nextRetrySeconds;
-          _retryDelay = Duration(
-            seconds: cappedRetrySeconds,
-          );
-        },
-      ),
-    );
-
-    _loadingBannerAd = ad;
-    ad.load();
-  }
-
-  void _disposeLoadedBanner({bool afterFrame = false}) {
-    final ad = _bannerAd;
-    _bannerAd = null;
-    _loaded = false;
-    if (ad == null) return;
-    if (afterFrame && mounted) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => ad.dispose());
-    } else {
-      ad.dispose();
-    }
-  }
-
-  @override
-  void dispose() {
-    AdConsentService.instance.removeListener(_onConsentChanged);
-    WidgetsBinding.instance.removeObserver(this);
-    _cancelRetryTimer();
-    _loadingBannerAd?.dispose();
-    _disposeLoadedBanner();
-    super.dispose();
-  }
-
-  void _debugInvalidBannerAdUnitId() {
-    if (_loggedInvalidBannerAdUnitId) return;
-    _loggedInvalidBannerAdUnitId = true;
-    _debugBanner(
-      "banner ad unit id is missing or invalid; use an ad unit id like "
-      "ca-app-pub-.../... and not the app id ca-app-pub-...~...",
-    );
-  }
-
-  void _debugBannerConfigurationIfNeeded() {
-    if (_loggedBannerConfiguration) return;
-    _loggedBannerConfiguration = true;
-    _debugBanner(
-      "banner configuration; platform=$_bannerPlatformLabel "
-      "source=$_bannerAdUnitSource adUnitId=$_bannerAdUnitId "
-      "supported=$_adsSupported",
-    );
-  }
-
-  void _debugBannerVisibility(String reason) {
-    final renderSize = context.size;
-    _debugBanner(
-      "banner visibility; reason=$reason active=${widget.active} "
-      "prewarm=${widget.prewarm} appResumed=$_appResumed loaded=$_loaded "
-      "height=${widget.height} nonZeroHeight=${widget.height > 0} "
-      "renderSize=$renderSize",
-    );
-  }
-
-  void _debugBanner(String message) {
-    if (kDebugMode) debugPrint("[ads][banner][${widget.screenName}] $message");
-  }
-
-  void _debugBannerLoadError(String prefix, LoadAdError error) {
-    _debugBanner(
-      "$prefix; platform=$_bannerPlatformLabel "
-      "source=$_bannerAdUnitSource adUnitId=$_bannerAdUnitId "
-      "error.code=${error.code} "
-      "error.domain=${error.domain} "
-      "error.message=${error.message} "
-      "error.responseInfo=${error.responseInfo}",
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final ad = _bannerAd;
-    return SizedBox(
-      height: widget.height,
-      width: double.infinity,
-      child: _loaded && ad != null
-          ? Center(
-              child: SizedBox(
-                width: ad.size.width.toDouble(),
-                height: ad.size.height.toDouble(),
-                child: AdWidget(ad: ad),
-              ),
-            )
-          : const SizedBox.shrink(),
-    );
-  }
-}
-
 class ScreenAdHeader extends StatelessWidget {
   final String title;
   final bool active;
@@ -579,15 +185,13 @@ class ScreenAdHeader extends StatelessWidget {
               ),
         ),
         const SizedBox(height: 8),
-        if (adsDisabled)
-          const SizedBox(height: 54, width: double.infinity)
-        else
-          BannerAdSlot(
-            key: ValueKey("banner-ad-slot-$screenName"),
-            height: 54,
+        if (!adsDisabled && screenName != 'home' && screenName != 'settings')
+          NativeAdSlot(
+            key: ValueKey('native-ad-slot-$screenName'),
+            placement: screenName == 'puzzle'
+                ? NativePlacement.puzzle
+                : NativePlacement.settings,
             active: active,
-            prewarm: prewarmBanner,
-            screenName: screenName,
           ),
         const SizedBox(height: 8),
       ],
@@ -1144,6 +748,12 @@ class _OtherAnswerField extends StatelessWidget {
   }
 }
 
+// Keep Home and Settings compact without changing padding inside controls.
+const _mainScreenCardPadding =
+    EdgeInsets.symmetric(horizontal: 16, vertical: 12);
+const _mainScreenCardGap = 6.0;
+const _mainScreenSectionGap = 10.0;
+
 class HomeTab extends StatelessWidget {
   final bool active;
   final bool prewarmBanner;
@@ -1248,6 +858,7 @@ class HomeTab extends StatelessWidget {
               padding: const EdgeInsets.only(bottom: 8),
               children: [
                 GlassCard(
+                  padding: _mainScreenCardPadding,
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -1331,8 +942,9 @@ class HomeTab extends StatelessWidget {
                     ],
                   ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: _mainScreenCardGap),
                 GlassCard(
+                  padding: _mainScreenCardPadding,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -1378,46 +990,51 @@ class HomeTab extends StatelessWidget {
                     ],
                   ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: _mainScreenCardGap),
                 GlassCard(
+                  padding: _mainScreenCardPadding,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
                           Expanded(
-                            child: Text(
-                              "Locked apps",
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .labelLarge
-                                  ?.copyWith(
-                                    color: cs.onSurfaceVariant,
-                                  ),
-                              overflow: TextOverflow.ellipsis,
+                              child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Locked apps',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .labelLarge
+                                      ?.copyWith(color: cs.onSurfaceVariant)),
+                              Text('$lockedSelectionCount selected',
+                                  style:
+                                      Theme.of(context).textTheme.labelSmall),
+                            ],
+                          )),
+                          Flexible(
+                              flex: 2,
+                              child: Center(
+                                  child: EmergencyUnlockButton(
+                                compact: true,
+                                remaining: emergencyUnlockRemaining,
+                                activeRemaining: emergencyUnlockActiveRemaining,
+                                busy: emergencyUnlockBusy,
+                                onTap: onEmergencyUnlock,
+                              ))),
+                          Expanded(
+                              child: Align(
+                            alignment: Alignment.centerRight,
+                            child: TextButton(
+                              style: TextButton.styleFrom(
+                                  minimumSize: const Size(0, 44),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 4)),
+                              onPressed: onEditLockedApps,
+                              child: const Text('Edit'),
                             ),
-                          ),
-                          EmergencyUnlockButton(
-                            remaining: emergencyUnlockRemaining,
-                            activeRemaining: emergencyUnlockActiveRemaining,
-                            busy: emergencyUnlockBusy,
-                            onTap: onEmergencyUnlock,
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            "$lockedSelectionCount",
-                            style: Theme.of(context)
-                                .textTheme
-                                .labelLarge
-                                ?.copyWith(
-                                  fontWeight: FontWeight.w800,
-                                ),
-                          ),
-                          const SizedBox(width: 8),
-                          TextButton(
-                            onPressed: onEditLockedApps,
-                            child: const Text("Edit"),
-                          ),
+                          )),
                         ],
                       ),
                       const SizedBox(height: 6),
@@ -1488,6 +1105,8 @@ class HomeTab extends StatelessWidget {
                     ],
                   ),
                 ),
+                if (!adsDisabled)
+                  NativeAdSlot(placement: NativePlacement.home, active: active),
               ],
             ),
           ),
@@ -1533,6 +1152,7 @@ class HomeTab extends StatelessWidget {
 }
 
 class EmergencyUnlockButton extends StatelessWidget {
+  final bool compact;
   final int remaining;
   final Duration activeRemaining;
   final bool busy;
@@ -1540,6 +1160,7 @@ class EmergencyUnlockButton extends StatelessWidget {
 
   const EmergencyUnlockButton({
     super.key,
+    this.compact = false,
     required this.remaining,
     required this.activeRemaining,
     required this.busy,
@@ -1569,7 +1190,7 @@ class EmergencyUnlockButton extends StatelessWidget {
         onPressed: canUse ? onTap : null,
         style: OutlinedButton.styleFrom(
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          minimumSize: const Size(0, 34),
+          minimumSize: Size(0, compact ? 44 : 34),
           padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
           visualDensity: VisualDensity.compact,
           foregroundColor: cs.primary,
@@ -1578,53 +1199,69 @@ class EmergencyUnlockButton extends StatelessWidget {
             borderRadius: BorderRadius.circular(999),
           ),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.bolt_rounded, size: 16, color: cs.primary),
-            const SizedBox(width: 5),
-            Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  "Emergency",
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: canUse || isActive
-                            ? cs.primary
-                            : cs.onSurfaceVariant,
-                        fontWeight: FontWeight.w900,
+        child: compact
+            ? Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('Emergency Unlock',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context)
+                          .textTheme
+                          .labelSmall
+                          ?.copyWith(fontWeight: FontWeight.w900)),
+                  Text(isActive ? badgeText : '$badgeText / 1 min',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.labelSmall),
+                ],
+              )
+            : Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.bolt_rounded, size: 16, color: cs.primary),
+                  const SizedBox(width: 5),
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        "Emergency",
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: canUse || isActive
+                                  ? cs.primary
+                                  : cs.onSurfaceVariant,
+                              fontWeight: FontWeight.w900,
+                            ),
                       ),
-                ),
-                Text(
-                  "1 min",
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: cs.onSurfaceVariant,
-                        fontWeight: FontWeight.w700,
-                        height: 1.0,
+                      Text(
+                        "1 min",
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: cs.onSurfaceVariant,
+                              fontWeight: FontWeight.w700,
+                              height: 1.0,
+                            ),
                       ),
-                ),
-              ],
-            ),
-            const SizedBox(width: 7),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: isActive
-                    ? cs.primary.withValues(alpha: 0.16)
-                    : cs.surfaceContainerHighest.withValues(alpha: 0.7),
-                borderRadius: BorderRadius.circular(999),
-              ),
-              child: Text(
-                badgeText,
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                      color: isActive ? cs.primary : cs.onSurfaceVariant,
-                      fontWeight: FontWeight.w900,
+                    ],
+                  ),
+                  const SizedBox(width: 7),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: isActive
+                          ? cs.primary.withValues(alpha: 0.16)
+                          : cs.surfaceContainerHighest.withValues(alpha: 0.7),
+                      borderRadius: BorderRadius.circular(999),
                     ),
+                    child: Text(
+                      badgeText,
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: isActive ? cs.primary : cs.onSurfaceVariant,
+                            fontWeight: FontWeight.w900,
+                          ),
+                    ),
+                  ),
+                ],
               ),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -2219,6 +1856,7 @@ class SettingsTab extends StatelessWidget {
               padding: const EdgeInsets.only(bottom: 28),
               children: [
                 GlassCard(
+                  padding: _mainScreenCardPadding,
                   child: SettingsRow(
                     icon: isPremium
                         ? Icons.verified_rounded
@@ -2238,14 +1876,15 @@ class SettingsTab extends StatelessWidget {
                     onTap: onOpenPremium,
                   ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: _mainScreenSectionGap),
                 Text("Lock controls",
                     style: Theme.of(context)
                         .textTheme
                         .labelLarge
                         ?.copyWith(color: cs.onSurfaceVariant)),
-                const SizedBox(height: 8),
+                const SizedBox(height: _mainScreenCardGap),
                 GlassCard(
+                  padding: _mainScreenCardPadding,
                   child: SettingsRow(
                     icon: Icons.lock_rounded,
                     title: "Lock",
@@ -2257,53 +1896,66 @@ class SettingsTab extends StatelessWidget {
                     onTap: () => onLockToggle(!lockEnabled),
                   ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: _mainScreenSectionGap),
                 Text("Puzzle settings",
                     style: Theme.of(context)
                         .textTheme
                         .labelLarge
                         ?.copyWith(color: cs.onSurfaceVariant)),
-                const SizedBox(height: 8),
+                const SizedBox(height: _mainScreenCardGap),
                 GlassCard(
+                  padding: _mainScreenCardPadding,
                   child: SettingsRow(
                     icon: Icons.extension_rounded,
                     title: "Difficulty",
                     subtitle: isPremium
                         ? "Controls the next puzzle request"
                         : "Premium feature. Free uses Normal (1500)",
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (!isPremium) ...[
-                          Icon(Icons.lock_rounded,
-                              size: 18, color: cs.onSurfaceVariant),
-                          const SizedBox(width: 6),
-                        ],
-                        Text(
-                          getDifficultyDisplayName(difficulty),
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodyMedium
-                              ?.copyWith(fontWeight: FontWeight.w700),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(width: 4),
-                        Icon(Icons.chevron_right_rounded,
-                            color: cs.onSurfaceVariant),
-                      ],
-                    ),
+                    trailing: ConstrainedBox(
+                        constraints: BoxConstraints(
+                            maxWidth: min(
+                                180, MediaQuery.sizeOf(context).width * 0.4)),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (!isPremium) ...[
+                              Icon(Icons.lock_rounded,
+                                  size: 18, color: cs.onSurfaceVariant),
+                              const SizedBox(width: 6),
+                            ],
+                            Flexible(
+                                child: Text(
+                              getDifficultyDisplayName(difficulty),
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium
+                                  ?.copyWith(fontWeight: FontWeight.w700),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            )),
+                            const SizedBox(width: 4),
+                            Icon(Icons.chevron_right_rounded,
+                                color: cs.onSurfaceVariant),
+                          ],
+                        )),
                     onTap: onOpenDifficulty,
                   ),
                 ),
-                const SizedBox(height: 12),
+                if (!adsDisabled)
+                  NativeAdSlot(
+                    key: const ValueKey('native-ad-slot-settings'),
+                    placement: NativePlacement.settings,
+                    active: active,
+                  ),
+                const SizedBox(height: _mainScreenSectionGap),
                 Text("Appearance",
                     style: Theme.of(context)
                         .textTheme
                         .labelLarge
                         ?.copyWith(color: cs.onSurfaceVariant)),
-                const SizedBox(height: 8),
+                const SizedBox(height: _mainScreenCardGap),
                 GlassCard(
+                  padding: _mainScreenCardPadding,
                   child: SettingsRow(
                     icon: Icons.brightness_6_rounded,
                     title: "Theme",
@@ -2395,14 +2047,15 @@ class SettingsTab extends StatelessWidget {
                     },
                   ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: _mainScreenSectionGap),
                 Text("Support",
                     style: Theme.of(context)
                         .textTheme
                         .labelLarge
                         ?.copyWith(color: cs.onSurfaceVariant)),
-                const SizedBox(height: 8),
+                const SizedBox(height: _mainScreenCardGap),
                 GlassCard(
+                  padding: _mainScreenCardPadding,
                   child: Column(
                     children: [
                       SettingsRow(
@@ -2929,7 +2582,12 @@ class _AppSelectionPageState extends State<AppSelectionPage> {
 // =========================
 class GlassCard extends StatelessWidget {
   final Widget child;
-  const GlassCard({super.key, required this.child});
+  final EdgeInsetsGeometry padding;
+  const GlassCard({
+    super.key,
+    required this.child,
+    this.padding = const EdgeInsets.all(16),
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -2938,7 +2596,7 @@ class GlassCard extends StatelessWidget {
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(16),
+      padding: padding,
       decoration: BoxDecoration(
         color: cs.surfaceContainer.withValues(alpha: dark ? 0.92 : 0.98),
         borderRadius: BorderRadius.circular(24),
@@ -3271,6 +2929,38 @@ class PaywallScreen extends StatelessWidget {
 
   const PaywallScreen({super.key, required this.access});
 
+  Future<void> _redeemCode(BuildContext context) async {
+    var enteredCode = '';
+    final code = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Redeem Code'),
+        content: TextField(
+          autofocus: true,
+          autocorrect: false,
+          enableSuggestions: false,
+          textCapitalization: TextCapitalization.characters,
+          decoration: const InputDecoration(labelText: 'Access code'),
+          onChanged: (value) => enteredCode = value,
+          onSubmitted: (value) => Navigator.pop(dialogContext, value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, enteredCode),
+            child: const Text('Redeem'),
+          ),
+        ],
+      ),
+    );
+    if (code != null && context.mounted) {
+      await _perform(context, () => access.redeemCode(code));
+    }
+  }
+
   Future<void> _perform(
       BuildContext context, Future<String> Function() operation) async {
     final message = await operation();
@@ -3370,14 +3060,18 @@ class PaywallScreen extends StatelessWidget {
               FilledButton(
                 onPressed: access.busy
                     ? null
-                    : access.isPremium
+                    : access.hasSubscriptionPremium
                         ? () => openSubscriptionManagement(context, access)
-                        : access.monthlyPackage == null
+                        : access.hasLocalOverride
                             ? null
-                            : () => _perform(context, access.subscribe),
-                child: Text(access.isPremium
+                            : access.monthlyPackage == null
+                                ? null
+                                : () => _perform(context, access.subscribe),
+                child: Text(access.hasSubscriptionPremium
                     ? 'Manage Subscription'
-                    : 'Continue / Subscribe Monthly'),
+                    : access.hasLocalOverride
+                        ? 'Premium active (code)'
+                        : 'Continue / Subscribe Monthly'),
               ),
               const SizedBox(height: 4),
               Wrap(
@@ -3412,6 +3106,17 @@ class PaywallScreen extends StatelessWidget {
                     : () => _perform(context, access.restorePurchases),
                 child: const Text("Restore Purchases"),
               ),
+              if (access.supportsRedeemCode)
+                TextButton(
+                  onPressed: access.busy
+                      ? null
+                      : access.hasLocalOverride
+                          ? () => _perform(context, access.disableLocalOverride)
+                          : () => _redeemCode(context),
+                  child: Text(access.hasLocalOverride
+                      ? 'Disable code access'
+                      : 'Redeem Code'),
+                ),
               if (access.storeMessage != null) ...[
                 Text(access.storeMessage!, textAlign: TextAlign.center),
                 TextButton(
